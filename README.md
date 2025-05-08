@@ -52,10 +52,6 @@ M-x org-include-inline-mode
 
 # Include specific lines
 #+INCLUDE: "path/to/file.org" :lines "5-10"
-
-# Include by headline
-#+INCLUDE: "path/to/file.org::*Heading"
-#+INCLUDE: "path/to/file.org::#custom-id"
 ```
 
 ## Commands
