@@ -76,6 +76,34 @@ M-x org-include-inline-mode
                     :foreground "white")
 ```
 
+## Comparison with org-transclusion
+
+While both org-include-inline and org-transclusion deal with including content from other files, they serve different purposes:
+
+- **Purpose**:
+  - org-include-inline: Focuses on visualizing Org's native #+INCLUDE directives inline
+  - org-transclusion: Provides a more general transclusion system for various content types
+
+- **Implementation**:
+  - org-include-inline: Uses overlays to display content beneath #+INCLUDE lines
+  - org-transclusion: Creates actual text content in the buffer that can be edited
+
+- **Use Cases**:
+  - org-include-inline: Best for:
+    - Working with existing #+INCLUDE directives
+    - Quick preview of included content
+    - Source code inclusion and documentation
+  - org-transclusion: Better for:
+    - Complex transclusion needs
+    - Live editing of transcluded content
+    - Advanced linking between documents
+
+- **Simplicity**:
+  - org-include-inline: Lightweight, focused on one specific feature
+  - org-transclusion: More feature-rich but with higher complexity
+
+Choose org-include-inline if you mainly work with #+INCLUDE directives and want a simple, visual way to see included content. Choose org-transclusion for more advanced document transclusion needs.
+
 ## Contributing
 
 Contributions are welcome! Feel free to:
