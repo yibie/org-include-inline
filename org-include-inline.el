@@ -18,8 +18,7 @@
 
 (require 'org)
 (require 'org-element)
-(require 'cl-lib)
-(require 'org-src)  ; Explicitly require org-src for editing functionality
+(require 'org-src)  
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Customization
@@ -139,63 +138,63 @@ The line should be in format: #+INCLUDE: \"FILE\" [:lines \"N-M\"] or
           (setq content (concat content (format "\n... (truncated at %d lines)" org-include-inline-max-lines-to-display))))))
     content))
 
-(defun org-include-inline--fetch-org-headline-content (file headline-spec)
-  "Fetch content of a specific headline from an Org FILE.
-HEADLINE-SPEC can be like \"*Headline Text\" or \"#custom-id\"."
-  (unless (file-readable-p file)
-    (message "Error: Org file not readable: %s" file)
-    (return-from org-include-inline--fetch-org-headline-content (format "Error: Org file not readable: %s" file)))
-  (unless headline-spec
-      (message "Error: No headline specification provided for file %s" file)
-      (return-from org-include-inline--fetch-org-headline-content (format "Error: No headline specified for %s" file)))
+;; (defun org-include-inline--fetch-org-headline-content (file headline-spec)
+;;   "Fetch content of a specific headline from an Org FILE.
+;; HEADLINE-SPEC can be like \"*Headline Text\" or \"#custom-id\"."
+;;   (unless (file-readable-p file)
+;;     (message "Error: Org file not readable: %s" file)
+;;     (return-from org-include-inline--fetch-org-headline-content (format "Error: Org file not readable: %s" file)))
+;;   (unless headline-spec
+;;       (message "Error: No headline specification provided for file %s" file)
+;;       (return-from org-include-inline--fetch-org-headline-content (format "Error: No headline specified for %s" file)))
 
-  (with-temp-buffer
-    (insert-file-contents file)
-    (org-mode) ; Ensure Org mode is active for parsing
-    (let ((elements (org-element-parse-buffer 'greater-element))
-          (target-headline nil)
-          (content ""))
-      ;; Find the headline
-      (org-element-map elements 'headline
-        (lambda (headline)
-          (when target-headline (org-element-map-break)) ; Found it in a previous iteration
-          (let ((title (org-element-property :title headline))
-                (custom-id (org-element-property :CUSTOM_ID headline))
-                (raw-headline (org-element-property :raw-value headline))) ; For *Headline matching
-            (cond
-             ;; Match by CUSTOM_ID (e.g., #custom-id)
-             ((and (string-prefix-p "#" headline-spec)
-                   custom-id
-                   (string= custom-id (substring headline-spec 1)))
-              (setq target-headline headline))
-             ;; Match by full headline text (e.g., *Headline Text or ** Another)
-             ((and (string-prefix-p "*" headline-spec)
-                   raw-headline ; compare with the raw headline string from Org
-                   (string= (substring headline-spec (cl-position ?* headline-spec :from-end t)) ; Get text after last *
-                            (replace-regexp-in-string "^\\*+\\s-*" "" raw-headline))) ; Compare title part only
-              (setq target-headline headline))
-             ;; Match by named element (e.g. "my-element" for #+NAME: my-element)
-             ;; This requires org-element-map to also check for 'named-element' types
-             ;; or a different strategy if `headline-spec` does not start with * or #.
-             ;; For now, we assume headline-spec implies * or # if it's a headline include.
-             )))
-        nil nil t) ; Search affiliated keywords
+;;   (with-temp-buffer
+;;     (insert-file-contents file)
+;;     (org-mode) ; Ensure Org mode is active for parsing
+;;     (let ((elements (org-element-parse-buffer 'greater-element))
+;;           (target-headline nil)
+;;           (content ""))
+;;       ;; Find the headline
+;;       (org-element-map elements 'headline
+;;         (lambda (headline)
+;;           (when target-headline (org-element-map-break)) ; Found it in a previous iteration
+;;           (let ((title (org-element-property :title headline))
+;;                 (custom-id (org-element-property :CUSTOM_ID headline))
+;;                 (raw-headline (org-element-property :raw-value headline))) ; For *Headline matching
+;;             (cond
+;;              ;; Match by CUSTOM_ID (e.g., #custom-id)
+;;              ((and (string-prefix-p "#" headline-spec)
+;;                    custom-id
+;;                    (string= custom-id (substring headline-spec 1)))
+;;               (setq target-headline headline))
+;;              ;; Match by full headline text (e.g., *Headline Text or ** Another)
+;;              ((and (string-prefix-p "*" headline-spec)
+;;                    raw-headline ; compare with the raw headline string from Org
+;;                    (string= (substring headline-spec (cl-position ?* headline-spec :from-end t)) ; Get text after last *
+;;                             (replace-regexp-in-string "^\\*+\\s-*" "" raw-headline))) ; Compare title part only
+;;               (setq target-headline headline))
+;;              ;; Match by named element (e.g. "my-element" for #+NAME: my-element)
+;;              ;; This requires org-element-map to also check for 'named-element' types
+;;              ;; or a different strategy if `headline-spec` does not start with * or #.
+;;              ;; For now, we assume headline-spec implies * or # if it's a headline include.
+;;              )))
+;;         nil nil t) ; Search affiliated keywords
 
-      (if target-headline
-          (let* ((contents-begin (org-element-property :contents-begin target-headline))
-                 (contents-end (org-element-property :contents-end target-headline))
-                 (raw-content (if (and contents-begin contents-end)
-                                  (buffer-substring-no-properties contents-begin contents-end)
-                                "")))
-            ;; *** REPLACED complex regexp with string-trim ***
-            (setq content (string-trim raw-content))
+;;       (if target-headline
+;;           (let* ((contents-begin (org-element-property :contents-begin target-headline))
+;;                  (contents-end (org-element-property :contents-end target-headline))
+;;                  (raw-content (if (and contents-begin contents-end)
+;;                                   (buffer-substring-no-properties contents-begin contents-end)
+;;                                 "")))
+;;             ;; *** REPLACED complex regexp with string-trim ***
+;;             (setq content (string-trim raw-content))
 
-            ;; Basic truncation for very long headline contents (after trimming)
-            (if (> (length content) (* org-include-inline-max-lines-to-display 80)) ; Approx char limit
-                (setq content (concat (substring content 0 (* org-include-inline-max-lines-to-display 80))
-                                      "\n... (headline content truncated)"))))
-        (setq content (format "Error: Headline/target \"%s\" not found in %s" headline-spec (file-name-nondirectory file)))))
-      content))
+;;             ;; Basic truncation for very long headline contents (after trimming)
+;;             (if (> (length content) (* org-include-inline-max-lines-to-display 80)) ; Approx char limit
+;;                 (setq content (concat (substring content 0 (* org-include-inline-max-lines-to-display 80))
+;;                                       "\n... (headline content truncated)"))))
+;;         (setq content (format "Error: Headline/target \"%s\" not found in %s" headline-spec (file-name-nondirectory file)))))
+;;       content))
 
 (defun org-include-inline--create-or-update-overlay (point content &optional buffer)
   "Create or update an overlay at POINT to display CONTENT in BUFFER.
