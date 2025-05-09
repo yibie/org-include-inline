@@ -127,15 +127,20 @@ The line should be in format: #+INCLUDE: \"FILE\" [:lines \"N-M\"] or
             (result-lines '()))
         (while (and (not (eobp)) (< current-line start-line))
           (forward-line 1)
-          (incf current-line))
-        (while (and (not (eobp)) (<= current-line end-line) (< lines-count org-include-inline-max-lines-to-display))
-          (push (buffer-substring-no-properties (line-beginning-position) (line-end-position)) result-lines)
+          (setq current-line (1+ current-line)))
+        (while (and (not (eobp)) 
+                    (<= current-line end-line) 
+                    (< lines-count org-include-inline-max-lines-to-display))
+          (push (buffer-substring-no-properties (line-beginning-position) (line-end-position)) 
+                result-lines)
           (forward-line 1)
-          (incf current-line)
-          (incf lines-count))
+          (setq current-line (1+ current-line)
+                lines-count (1+ lines-count)))
         (setq content (mapconcat #'identity (nreverse result-lines) "\n"))
         (when (and (not (eobp)) (<= current-line end-line)) ; Means it was truncated
-          (setq content (concat content (format "\n... (truncated at %d lines)" org-include-inline-max-lines-to-display))))))
+          (setq content (concat content 
+                              (format "\n... (truncated at %d lines)" 
+                                     org-include-inline-max-lines-to-display))))))
     content))
 
 ;; (defun org-include-inline--fetch-org-headline-content (file headline-spec)
@@ -431,11 +436,11 @@ Otherwise, return the path relative to the current file."
 
   (when (and (derived-mode-p 'org-mode) org-include-inline-mode)
     (let ((current-buffer (current-buffer))
-          (iteration-count 0)) ;
+          (count 0))
       (save-excursion
         (goto-char (point-min))
         (while (search-forward-regexp "^[ \t]*#\\+INCLUDE:" nil t)
-          (setq iteration-count (1+ iteration-count))
+          (setq count (1+ count))
           
           (let* ((match-line-start (match-beginning 0))
                  (current-line-text
@@ -471,7 +476,7 @@ Otherwise, return the path relative to the current file."
                 (when (and content overlay-pos)
                   (org-include-inline--create-or-update-overlay 
                    overlay-pos content current-buffer)))))))
-      (message "Refresh complete. Processed %d includes." iteration-count))))
+      (message "Refresh complete. Processed %d includes." count))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Minor Mode Definition
