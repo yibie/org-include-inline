@@ -55,16 +55,29 @@ When nil, you need to manually enable the mode with M-x org-include-inline-mode.
   "Alist of (source-file . org-buffers) pairs.
 Each pair maps a source file to a list of org buffers that include it.")
 
+(defvar org-include-inline--block-types
+  '("src" "example" "export" ":custom")
+  "List of common block types for #+INCLUDE directives.")
+
+(defvar org-include-inline--common-languages
+  '("emacs-lisp" "python" "sh" "C" "C++" "java" "javascript" "css" "html" "org" "latex")
+  "List of common programming languages for src blocks.")
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Helper Functions
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defun org-include-inline--parse-include-directive (line-text)
   "Parse an #+INCLUDE line and return a plist with info.
-The line should be in format: #+INCLUDE: \"FILE\" [:lines \"N-M\"] or
-#+INCLUDE: \"FILE::HEADLINE\"."
+The line should be in format: 
+#+INCLUDE: \"FILE\" [BLOCK-TYPE LANGUAGE] [:lines \"N-M\"] or
+#+INCLUDE: \"FILE::HEADLINE\" or
+#+INCLUDE: \"FILE::BLOCK-NAME\"
+
+BLOCK-TYPE can be 'src', 'example', etc.
+LANGUAGE is the source code language when BLOCK-TYPE is 'src' or 'export'."
   (let ((case-fold-search t)
-        file type lines-spec headline-spec
+        file type lines-spec headline-spec block-type language named-block
         line-after-file remainder-after-headline)
 
     ;; 1. Match #+INCLUDE: "FILE" part and get the rest of the line
@@ -72,6 +85,13 @@ The line should be in format: #+INCLUDE: \"FILE\" [:lines \"N-M\"] or
         (progn
           (setq file (match-string 1 line-text))
           (setq line-after-file (match-string 2 line-text))
+          (message "DEBUG: Initial file match: %s, rest: %s" file line-after-file)
+
+          ;; Check if this is a named block reference (file::block-name)
+          (when (string-match "\\(.*\\)::\\([^:]+\\)\\'" file)
+            (setq named-block (match-string 2 file)
+                  file (match-string 1 file))
+            (message "DEBUG: Found named block: %s in file: %s" named-block file))
 
           (when file
             (setq file (expand-file-name file (if buffer-file-name
@@ -80,27 +100,51 @@ The line should be in format: #+INCLUDE: \"FILE\" [:lines \"N-M\"] or
             ;; Initially, the remainder for further parsing is everything after the file part
             (setq remainder-after-headline line-after-file)
 
-            ;; 2. Try to parse ::headline-spec from line-after-file
-            (when (string-match "^[ \t]*::\\(.+?\\)[ \t]*\\(.*\\)" line-after-file)
-              (setq headline-spec (string-trim (match-string 1 line-after-file)))
-              (setq remainder-after-headline (match-string 2 line-after-file)))
+            ;; 2. Try to parse block type and language
+            (when (string-match "^[ \t]+\\([^ \t\n]+\\)\\(?:[ \t]+\\([^ \t\n]+\\)\\)?[ \t]*\\(.*\\)" line-after-file)
+              (let ((first-param (match-string 1 line-after-file))
+                    (second-param (match-string 2 line-after-file)))
+                ;; Check if first parameter is a block type
+                (unless (string-prefix-p ":" first-param)
+                  (setq block-type first-param
+                        language second-param
+                        remainder-after-headline (match-string 3 line-after-file)))))
 
-            ;; 3. Try to parse :lines from remainder-after-headline
-            (when (string-match "^[ \t]*:lines[ \t]+\"\\([0-9]+-\?[0-9]*\\)\"" remainder-after-headline)
+            ;; 3. Try to parse ::headline-spec from remainder
+            (when (and remainder-after-headline
+                      (string-match "^[ \t]*::\\(.+?\\)[ \t]*\\(.*\\)" remainder-after-headline))
+              (setq headline-spec (string-trim (match-string 1 remainder-after-headline)))
+              (setq remainder-after-headline (match-string 2 remainder-after-headline)))
+
+            ;; 4. Try to parse :lines from remainder
+            (when (and remainder-after-headline
+                      (string-match "^[ \t]*:lines[ \t]+\"\\([0-9]+-\?[0-9]*\\)\"" remainder-after-headline))
               (setq lines-spec (match-string 1 remainder-after-headline)))
 
             ;; Determine type
             (cond
+             (named-block (setq type :named-block))
              (headline-spec (setq type :headline))
              (lines-spec (setq type :lines))
              (t (setq type :lines) (setq lines-spec "1-")))
 
-            `(:file ,file :type ,type :lines-spec ,lines-spec :headline-spec ,headline-spec :original-line ,line-text)))
+            (message "DEBUG: Final parse result - type: %s, named-block: %s" type named-block)
+            `(:file ,file 
+              :type ,type 
+              :lines-spec ,lines-spec 
+              :headline-spec ,headline-spec
+              :block-type ,block-type
+              :language ,language
+              :named-block ,named-block
+              :original-line ,line-text)))
       nil)))
 
 
-(defun org-include-inline--fetch-file-lines (file lines-spec)
-  "Fetch specific lines from FILE based on LINES-SPEC (e.g., \"1-10\", \"5\")."
+(defun org-include-inline--fetch-file-lines (file lines-spec &optional block-type language)
+  "Fetch specific lines from FILE based on LINES-SPEC (e.g., \"1-10\", \"5\").
+If BLOCK-TYPE is provided, wrap content in appropriate block.
+LANGUAGE is used when BLOCK-TYPE is 'src' or 'export'.
+Note that for 'example', 'export', or 'src' blocks, content is escaped."
   (unless (file-readable-p file)
     (message "Error: File not readable: %s" file)
     (return-from org-include-inline--fetch-file-lines (format "Error: File not readable: %s" file)))
@@ -145,7 +189,60 @@ The line should be in format: #+INCLUDE: \"FILE\" [:lines \"N-M\"] or
           (setq content (concat content 
                               (format "\n... (truncated at %d lines)" 
                                      org-include-inline-max-lines-to-display))))))
+    
+    ;; Wrap content in appropriate block if needed
+    (when (and block-type (not (string-empty-p content)))
+      (let* ((block-name (if (string-prefix-p "\"" block-type)
+                            (substring block-type 1 -1)
+                          block-type))
+             (needs-escape (member block-name '("src" "example" "export")))
+             (escaped-content (if needs-escape
+                                (org-escape-code-in-string content)
+                              content)))
+        (setq content
+              (cond
+               ((member block-name '("src" "export"))
+                (format "#+begin_%s %s\n%s\n#+end_%s" 
+                        block-name
+                        (or language "")
+                        escaped-content
+                        block-name))
+               (t
+                (format "#+begin_%s\n%s\n#+end_%s"
+                        block-name
+                        escaped-content
+                        block-name))))))
     content))
+
+(defun org-include-inline--fetch-named-block-content (file block-name)
+  "Fetch content of a named block from FILE.
+BLOCK-NAME is the name of the block to fetch.
+Returns only the content of the block, without the #+NAME:, #+begin_src, and #+end_src lines."
+  (unless (file-readable-p file)
+    (message "Error: File not readable: %s" file)
+    (return-from org-include-inline--fetch-named-block-content 
+                 (format "Error: File not readable: %s" file)))
+  
+  (message "DEBUG: Fetching named block: %s from file: %s" block-name file)
+  (with-temp-buffer
+    (insert-file-contents file)
+    (org-mode)
+    (let* ((ast (org-element-parse-buffer))
+           (block (org-element-map ast '(src-block example-block)
+                   (lambda (element)
+                     (when (string= (org-element-property :name element) block-name)
+                       element))
+                   nil t))) ; stop at first match
+      (message "DEBUG: Found block: %s" (if block "yes" "no"))
+      (if block
+          (let* ((content (org-element-property :value block)))
+            (if content
+                (let ((trimmed (string-trim content)))
+                  (message "DEBUG: Block content length: %d" (length trimmed))
+                  trimmed)
+              "")) ; Return empty string if no content
+        (format "Error: Named block \"%s\" not found in %s" 
+                block-name (file-name-nondirectory file))))))
 
 ;; (defun org-include-inline--fetch-org-headline-content (file headline-spec)
 ;;   "Fetch content of a specific headline from an Org FILE.
@@ -291,6 +388,93 @@ If BUFFER is nil, use current buffer. Ensures overlay stays attached to buffer."
             (overlay-put ov 'after-string (overlay-get ov 'saved-after-string))
             (overlay-put ov 'display nil)))))))
 
+(defun org-include-inline-refresh-buffer ()
+  "Refresh all inline includes in the current buffer.
+
+This function:
+1. Clears all existing overlays
+2. Scans for #+INCLUDE directives
+3. For each directive:
+   - Parses the include specification
+   - Fetches content from source file
+   - Creates overlay to display content
+4. Registers source file dependencies for auto-refresh"
+  (interactive)
+  (message "Refreshing inline includes...")
+  (org-include-inline--clear-overlays)
+  
+  ;; Only process if we're in an org buffer with the mode enabled
+  (when (and (derived-mode-p 'org-mode) 
+             org-include-inline-mode)
+    (let ((current-buffer (current-buffer))
+          (count 0)
+          (source-files '()))  ; Track source files for this buffer
+      
+      (save-excursion
+        (goto-char (point-min))
+        ;; Find all #+INCLUDE directives
+        (while (search-forward-regexp "^[ \t]*#\\+INCLUDE:" nil t)
+          (setq count (1+ count))
+          
+          (let* ((current-line-text
+                  (buffer-substring-no-properties 
+                   (line-beginning-position) (line-end-position)))
+                 (include-info (org-include-inline--parse-include-directive current-line-text)))
+            
+            (when include-info
+              (let ((source-file (plist-get include-info :file)))
+                ;; Add to source files list if not already there
+                (unless (member source-file source-files)
+                  (push source-file source-files))
+                
+                ;; Calculate overlay position (next line after #+INCLUDE)
+                (let ((overlay-pos (save-excursion
+                                   (forward-line 1)
+                                   (point))))
+                  
+                  ;; Fetch and display content based on include type
+                  (let ((content
+                         (cond
+                          ((eq (plist-get include-info :type) :lines)
+                           (org-include-inline--fetch-file-lines 
+                            source-file
+                            (plist-get include-info :lines-spec)
+                            (plist-get include-info :block-type)
+                            (plist-get include-info :language)))
+                          ((eq (plist-get include-info :type) :headline)
+                           (org-include-inline--fetch-org-headline-content 
+                            source-file
+                            (plist-get include-info :headline-spec)))
+                          ((eq (plist-get include-info :type) :named-block)
+                           (org-include-inline--fetch-named-block-content
+                            source-file
+                            (plist-get include-info :named-block)))
+                          (t 
+                           (format "Error: Unknown include type for %s" 
+                                 (plist-get include-info :original-line))))))
+                    
+                    ;; Create overlay if we have valid content
+                    (when (and content (> (length content) 0))
+                      (org-include-inline--create-or-update-overlay 
+                       overlay-pos content current-buffer)
+                      
+                      ;; Register this org buffer as dependent on the source file
+                      (org-include-inline--register-source-file 
+                       source-file current-buffer)))))))))
+      
+      (message "Refresh complete. Processed %d includes." count))))
+
+(defun org-include-inline--refresh-dependent-buffers ()
+  "Refresh all org buffers that include the current buffer's file."
+  (when buffer-file-name  
+    (let ((source-path (expand-file-name buffer-file-name)))
+      (dolist (buffer-entry org-include-inline--source-buffers)
+        (when (string= (car buffer-entry) source-path)
+          (dolist (org-buffer (cdr buffer-entry))
+            (when (buffer-live-p org-buffer)
+              (with-current-buffer org-buffer
+                (org-include-inline-refresh-buffer)))))))))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Interactive #+INCLUDE Creation
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -390,6 +574,134 @@ Otherwise, return the path relative to the current file."
     (when org-include-inline-mode
       (org-include-inline-refresh-buffer))))
 
+(defun org-include-inline-insert-as-block ()
+  "Interactively create an #+INCLUDE directive with a specific block type.
+This allows including file content wrapped in src, example, or other blocks."
+  (interactive)
+  (let* ((target-file (read-file-name "Include file as block: " nil nil t))
+         (smart-path nil)
+         (block-type (completing-read "Block type: " org-include-inline--block-types nil nil))
+         (language nil))
+    
+    ;; Validate file exists
+    (unless (file-exists-p target-file)
+      (message "File does not exist: %s" target-file)
+      (error "File not found"))
+    
+    ;; Get the smart path (relative or with ~)
+    (setq smart-path (org-include-inline--get-smart-path target-file))
+    
+    ;; For src blocks, prompt for language
+    (when (string= block-type "src")
+      (setq language (completing-read "Programming language: " 
+                                    org-include-inline--common-languages
+                                    nil ; predicate
+                                    nil ; require-match
+                                    nil ; initial-input
+                                    nil ; hist
+                                    (when-let* ((file-ext (file-name-extension target-file))
+                                              (lang (cond
+                                                    ((member file-ext '("el" "elisp")) "emacs-lisp")
+                                                    ((member file-ext '("py")) "python")
+                                                    ((member file-ext '("sh" "bash")) "sh")
+                                                    ((member file-ext '("c")) "C")
+                                                    ((member file-ext '("cpp" "cc" "cxx")) "C++")
+                                                    ((member file-ext '("js")) "javascript")
+                                                    ((member file-ext '("java")) "java")
+                                                    ((member file-ext '("css")) "css")
+                                                    ((member file-ext '("html" "htm")) "html")
+                                                    ((member file-ext '("org")) "org")
+                                                    ((member file-ext '("tex")) "latex"))))
+                                      lang))))
+    
+    ;; Handle :custom block type
+    (when (string= block-type ":custom")
+      (setq block-type (format "\"%s\"" 
+                              (read-string "Enter custom block name (with leading :): "))))
+    
+    ;; Insert the directive
+    (insert (cond
+            ((and (string= block-type "src") language)
+             (format "#+INCLUDE: \"%s\" %s %s\n" smart-path block-type language))
+            (t
+             (format "#+INCLUDE: \"%s\" %s\n" smart-path block-type))))
+    
+    (message "Inserted #+INCLUDE for %s as %s block" 
+             (file-name-nondirectory target-file)
+             (if (string= block-type "src") 
+                 (format "%s %s" block-type language)
+               block-type))
+    
+    ;; Refresh if mode is enabled
+    (when org-include-inline-mode
+      (org-include-inline-refresh-buffer))))
+
+(defun org-include-inline--get-named-blocks (file)
+  "Scan FILE for named blocks and return an alist of (name . properties).
+Each property list contains :name, :type (src, example, etc), and :language (for src blocks)."
+  (with-temp-buffer
+    (insert-file-contents file)
+    (org-mode)
+    (let ((blocks nil)
+          (ast (org-element-parse-buffer)))
+      ;; First pass: collect all NAME keywords
+      (org-element-map ast '(src-block example-block)
+        (lambda (element)
+          (let ((name (org-element-property :name element)))
+            (when name
+              (push (list name
+                         :type (if (eq (org-element-type element) 'src-block)
+                                 "src"
+                               "example")
+                         :language (org-element-property :language element))
+                    blocks)))))
+      (nreverse blocks))))
+
+(defun org-include-inline-insert-named-block ()
+  "Interactively select and include a named block from an Org file."
+  (interactive)
+  (let* ((target-file (read-file-name "Include named block from Org file: " nil nil t ".org"))
+         (smart-path nil))
+    
+    ;; Validate file exists and is org
+    (unless (and (file-exists-p target-file)
+                 (string-match-p "\\.org$" target-file))
+      (message "File must be an existing .org file: %s" target-file)
+      (error "Invalid file"))
+    
+    ;; Get named blocks
+    (let ((blocks (org-include-inline--get-named-blocks target-file)))
+      (unless blocks
+        (message "No named blocks found in %s" target-file)
+        (error "No named blocks"))
+      
+      ;; Get the smart path
+      (setq smart-path (org-include-inline--get-smart-path target-file))
+      
+      ;; Let user select a block
+      (let* ((choices (mapcar (lambda (block)
+                               (let ((name (car block))
+                                     (type (plist-get (cdr block) :type))
+                                     (lang (plist-get (cdr block) :language)))
+                                 (format "%s (%s%s)"
+                                         name
+                                         type
+                                         (if lang (format " - %s" lang) ""))))
+                             blocks))
+             (choice (completing-read "Select block: " choices nil t))
+             (selected-block (nth (cl-position choice choices :test #'string=) blocks))
+             (block-name (car selected-block)))
+        
+        ;; Insert the directive
+        (insert (format "#+INCLUDE: \"%s::%s\"\n" smart-path block-name))
+        (message "Inserted #+INCLUDE for named block \"%s\" from %s" 
+                 block-name
+                 (file-name-nondirectory target-file))
+        
+        ;; Refresh if mode is enabled
+        (when org-include-inline-mode
+          (org-include-inline-refresh-buffer))))))
+
 ;;  (defun org-include-inline-insert-from-headline ()
 ;;   "Interactively select an Org file and a headline to create an #+INCLUDE directive."
 ;;   (interactive)
@@ -444,86 +756,7 @@ Otherwise, return the path relative to the current file."
 ;;               (when org-include-inline-mode
 ;;                 (org-include-inline-refresh-buffer))))))))) 
 
-(defun org-include-inline-refresh-buffer ()
-  "Refresh all inline includes in the current buffer.
 
-This function:
-1. Clears all existing overlays
-2. Scans for #+INCLUDE directives
-3. For each directive:
-   - Parses the include specification
-   - Fetches content from source file
-   - Creates overlay to display content
-4. Registers source file dependencies for auto-refresh"
-  (interactive)
-  (message "Refreshing inline includes...")
-  (org-include-inline--clear-overlays)
-  
-  ;; Only process if we're in an org buffer with the mode enabled
-  (when (and (derived-mode-p 'org-mode) 
-             org-include-inline-mode)
-    (let ((current-buffer (current-buffer))
-          (count 0)
-          (source-files '()))  ; Track source files for this buffer
-      
-      (save-excursion
-        (goto-char (point-min))
-        ;; Find all #+INCLUDE directives
-        (while (search-forward-regexp "^[ \t]*#\\+INCLUDE:" nil t)
-          (setq count (1+ count))
-          
-          (let* ((current-line-text
-                  (buffer-substring-no-properties 
-                   (line-beginning-position) (line-end-position)))
-                 (include-info (org-include-inline--parse-include-directive current-line-text)))
-            
-            (when include-info
-              (let ((source-file (plist-get include-info :file)))
-                ;; Add to source files list if not already there
-                (unless (member source-file source-files)
-                  (push source-file source-files))
-                
-                ;; Calculate overlay position (next line after #+INCLUDE)
-                (let ((overlay-pos (save-excursion
-                                   (forward-line 1)
-                                   (point))))
-                  
-                  ;; Fetch and display content based on include type
-                  (let ((content
-                         (cond
-                          ((eq (plist-get include-info :type) :lines)
-                           (org-include-inline--fetch-file-lines 
-                            source-file
-                            (plist-get include-info :lines-spec)))
-                          ((eq (plist-get include-info :type) :headline)
-                           (org-include-inline--fetch-org-headline-content 
-                            source-file
-                            (plist-get include-info :headline-spec)))
-                          (t 
-                           (format "Error: Unknown include type for %s" 
-                                 (plist-get include-info :original-line))))))
-                    
-                    ;; Create overlay if we have valid content
-                    (when (and content (> (length content) 0))
-                      (org-include-inline--create-or-update-overlay 
-                       overlay-pos content current-buffer)
-                      
-                      ;; Register this org buffer as dependent on the source file
-                      (org-include-inline--register-source-file 
-                       source-file current-buffer)))))))))
-      
-      (message "Refresh complete. Processed %d includes." count))))
-
-(defun org-include-inline--refresh-dependent-buffers ()
-  "Refresh all org buffers that include the current buffer's file."
-  (when buffer-file-name  
-    (let ((source-path (expand-file-name buffer-file-name)))
-      (dolist (buffer-entry org-include-inline--source-buffers)
-        (when (string= (car buffer-entry) source-path)
-          (dolist (org-buffer (cdr buffer-entry))
-            (when (buffer-live-p org-buffer)
-              (with-current-buffer org-buffer
-                (org-include-inline-refresh-buffer)))))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Minor Mode Definition
@@ -547,10 +780,12 @@ When enabled, #+INCLUDE directives will have their content displayed
 inline using overlays.
 
 Available commands:
-  `org-include-inline-refresh-buffer`       - Refresh all inline includes in the current buffer
-  `org-include-inline-toggle-visibility`    - Toggle the visibility of inline content
-  `org-include-inline-insert-file`          - Insert a directive to include an entire file
-  `org-include-inline-insert-from-lines`    - Insert a directive to include specific lines from a file"
+  `org-include-inline-refresh-buffer'       - Refresh all inline includes in the current buffer
+  `org-include-inline-toggle-visibility'    - Toggle the visibility of inline content
+  `org-include-inline-insert-file'          - Insert a directive to include an entire file
+  `org-include-inline-insert-from-lines'    - Insert a directive to include specific lines from a file
+  `org-include-inline-insert-as-block'      - Insert a directive to include file as a block (src, example, etc.)
+  `org-include-inline-insert-named-block'   - Insert a directive to include a named block from an Org file"
   :init-value nil
   :lighter " IInc"
   :keymap (let ((map (make-sparse-keymap)))

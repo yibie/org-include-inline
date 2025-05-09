@@ -14,6 +14,8 @@ org-include-inline enhances the Org mode editing experience by showing included 
 - **Multiple Include Types**:
   - Include entire files
   - Include specific line ranges
+  - Include as source code blocks with syntax highlighting
+  - Include as example blocks or other block types
 - **Interactive Creation**: Easy-to-use commands for creating include directives
 - **Toggle Visibility**: Show/hide included content with a single command
 - **Auto-refresh**: 
@@ -42,6 +44,13 @@ M-x org-include-inline-mode
 2. Create include directives using any of these commands:
 - `M-x org-include-inline-insert-file` - Include an entire file
 - `M-x org-include-inline-insert-from-lines` - Include specific lines from a file
+- `M-x org-include-inline-insert-as-block` - Include file as a block (src, example, etc.)
+- `M-x org-include-inline-insert-named-block` - Include a named block from an Org file
+
+When using `org-include-inline-insert-named-block`, you can:
+1. Select an Org file containing named blocks
+2. Choose from a list of available named blocks (showing block type and language)
+3. The block will be included with its original type and properties
 
 3. Auto-refresh after modified the source file:
 - `C-c '` go to the source file.
@@ -59,6 +68,21 @@ M-x org-include-inline-mode
 
 # Include specific lines
 #+INCLUDE: "path/to/file.org" :lines "5-10"
+
+# Include as a source code block
+#+INCLUDE: "path/to/script.el" src emacs-lisp
+
+# Include as an example block
+#+INCLUDE: "path/to/config" example
+
+# Include specific lines as source code
+#+INCLUDE: "path/to/script.py" src python :lines "10-20"
+
+# Include with custom block type (must be quoted if starts with ':')
+#+INCLUDE: "path/to/file" ":custom-type"
+
+# Include a named block from an Org file
+#+INCLUDE: "path/to/file.org::block-name"
 ```
 
 ## Commands
