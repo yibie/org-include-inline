@@ -16,7 +16,10 @@ org-include-inline enhances the Org mode editing experience by showing included 
   - Include specific line ranges
 - **Interactive Creation**: Easy-to-use commands for creating include directives
 - **Toggle Visibility**: Show/hide included content with a single command
-- **Auto-refresh**: Content updates automatically when source files change
+- **Auto-refresh**: 
+  - Content updates automatically when source files change
+  - Intelligent dependency tracking ensures all dependent org buffers are refreshed
+  - Efficient cleanup on buffer/mode deactivation
 
 ## Installation
 
@@ -40,7 +43,11 @@ M-x org-include-inline-mode
 - `M-x org-include-inline-insert-file` - Include an entire file
 - `M-x org-include-inline-insert-from-lines` - Include specific lines from a file
 
-3. Refresh after modified the source file:
+3. Auto-refresh after modified the source file:
+- `C-c '` go to the source file.
+- Modify the source file.
+- Save the source file(⚠️Must save the file with command, like `C-x C-s`, or `M-x save-buffer`).
+- The included content will be updated automatically.
 
 ![Interactive Line Selection](images/figure2.gif)
 

@@ -51,6 +51,10 @@ When nil, you need to manually enable the mode with M-x org-include-inline-mode.
 (defvar-local org-include-inline--overlays nil
   "Buffer-local list of overlays created by org-include-inline-mode.")
 
+(defvar org-include-inline--source-buffers nil
+  "Alist of (source-file . org-buffers) pairs.
+Each pair maps a source file to a list of org buffers that include it.")
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Helper Functions
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -232,26 +236,38 @@ If BUFFER is nil, use current buffer. Ensures overlay stays attached to buffer."
       (message "org-include-inline--create-or-update-overlay: Content was NIL or empty. No overlay created. ===EXITING==="))))
 
 (defun org-include-inline--clear-overlays ()
-  "Remove all org-include-inline overlays from the current buffer. (Verbose Debugging)"
-  (message "org-include-inline--clear-overlays: ===ENTERED=== Buffer: %s. Current org-include-inline--overlays list (before clearing): %d items, list: %S"
-           (current-buffer)
-           (if (boundp 'org-include-inline--overlays) (length org-include-inline--overlays) 0)
-           org-include-inline--overlays)
-  (sit-for 0.01)
-  (let ((cleared-count 0))
-    (if (and (boundp 'org-include-inline--overlays) org-include-inline--overlays) ; Check if list exists and is not empty
-        (dolist (ov org-include-inline--overlays)
-          (when (overlayp ov) ; Make sure it's still a valid overlay
-            (message "org-include-inline--clear-overlays: Deleting overlay: %S (start: %s, end: %s, buffer: %s)"
-                     ov (overlay-start ov) (overlay-end ov) (overlay-buffer ov))
-	    (sit-for 0.01)
-            (delete-overlay ov)
-            (setq cleared-count (1+ cleared-count))))
-      (message "org-include-inline--clear-overlays: org-include-inline--overlays list was empty or not bound.") (sit-for 0.01))
-    (setq org-include-inline--overlays nil) ; Reset the list
-    (message "org-include-inline--clear-overlays: ===EXITING===. Cleared %d overlays. List is now: %S"
-             cleared-count org-include-inline--overlays)
-    (sit-for 0.01)))
+  "Remove all org-include-inline overlays from the current buffer."
+  (when (and (boundp 'org-include-inline--overlays)
+             org-include-inline--overlays)
+    (dolist (ov org-include-inline--overlays)
+      (when (overlayp ov)  
+        (delete-overlay ov)))
+    (setq org-include-inline--overlays nil)))
+
+(defun org-include-inline--cleanup-on-kill ()
+  "Clean up org-include-inline registrations when a buffer is killed."
+  (when org-include-inline-mode
+    (org-include-inline--unregister-buffer (current-buffer))))
+
+(add-hook 'kill-buffer-hook #'org-include-inline--cleanup-on-kill)
+
+(defun org-include-inline--register-source-file (source-file org-buffer)
+  "Register that ORG-BUFFER includes SOURCE-FILE."
+  (let* ((source-path (expand-file-name source-file))
+         (existing-entry (assoc source-path org-include-inline--source-buffers)))
+    (if existing-entry
+        (unless (memq org-buffer (cdr existing-entry))
+          (setcdr existing-entry (cons org-buffer (cdr existing-entry))))
+      (push (cons source-path (list org-buffer)) 
+            org-include-inline--source-buffers))))
+
+(defun org-include-inline--unregister-buffer (buffer)
+  "Remove BUFFER from all source file registrations."
+  (setq org-include-inline--source-buffers
+        (cl-loop for (source-file . buffers) in org-include-inline--source-buffers
+                 for new-buffers = (remq buffer buffers)
+                 when new-buffers  ; 只保留还有其他 buffer 的条目
+                 collect (cons source-file new-buffers))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Core Functions
@@ -429,54 +445,85 @@ Otherwise, return the path relative to the current file."
 ;;                 (org-include-inline-refresh-buffer))))))))) 
 
 (defun org-include-inline-refresh-buffer ()
-  "Refresh all inline includes in the current buffer."
+  "Refresh all inline includes in the current buffer.
+
+This function:
+1. Clears all existing overlays
+2. Scans for #+INCLUDE directives
+3. For each directive:
+   - Parses the include specification
+   - Fetches content from source file
+   - Creates overlay to display content
+4. Registers source file dependencies for auto-refresh"
   (interactive)
   (message "Refreshing inline includes...")
   (org-include-inline--clear-overlays)
-
-  (when (and (derived-mode-p 'org-mode) org-include-inline-mode)
+  
+  ;; Only process if we're in an org buffer with the mode enabled
+  (when (and (derived-mode-p 'org-mode) 
+             org-include-inline-mode)
     (let ((current-buffer (current-buffer))
-          (count 0))
+          (count 0)
+          (source-files '()))  ; Track source files for this buffer
+      
       (save-excursion
         (goto-char (point-min))
+        ;; Find all #+INCLUDE directives
         (while (search-forward-regexp "^[ \t]*#\\+INCLUDE:" nil t)
           (setq count (1+ count))
           
-          (let* ((match-line-start (match-beginning 0))
-                 (current-line-text
+          (let* ((current-line-text
                   (buffer-substring-no-properties 
                    (line-beginning-position) (line-end-position)))
-                 (include-info (org-include-inline--parse-include-directive current-line-text))
-                 (content nil)
-                 (overlay-pos-calculation-error nil)
-                 (overlay-pos
-                  (condition-case e
-                      (progn
-                        (forward-line 1)
-                        (point))
-                    ((debug error)
-                     (setq overlay-pos-calculation-error t)
-                     nil))))
-
+                 (include-info (org-include-inline--parse-include-directive current-line-text)))
+            
             (when include-info
-              (setq content
-                    (cond
-                     ((eq (plist-get include-info :type) :lines)
-                      (org-include-inline--fetch-file-lines 
-                       (plist-get include-info :file)
-                       (plist-get include-info :lines-spec)))
-                     ((eq (plist-get include-info :type) :headline)
-                      (org-include-inline--fetch-org-headline-content 
-                       (plist-get include-info :file)
-                       (plist-get include-info :headline-spec)))
-                     (t (format "Error: Unknown include type for %s" 
-                              (plist-get include-info :original-line)))))
-
-              (unless overlay-pos-calculation-error
-                (when (and content overlay-pos)
-                  (org-include-inline--create-or-update-overlay 
-                   overlay-pos content current-buffer)))))))
+              (let ((source-file (plist-get include-info :file)))
+                ;; Add to source files list if not already there
+                (unless (member source-file source-files)
+                  (push source-file source-files))
+                
+                ;; Calculate overlay position (next line after #+INCLUDE)
+                (let ((overlay-pos (save-excursion
+                                   (forward-line 1)
+                                   (point))))
+                  
+                  ;; Fetch and display content based on include type
+                  (let ((content
+                         (cond
+                          ((eq (plist-get include-info :type) :lines)
+                           (org-include-inline--fetch-file-lines 
+                            source-file
+                            (plist-get include-info :lines-spec)))
+                          ((eq (plist-get include-info :type) :headline)
+                           (org-include-inline--fetch-org-headline-content 
+                            source-file
+                            (plist-get include-info :headline-spec)))
+                          (t 
+                           (format "Error: Unknown include type for %s" 
+                                 (plist-get include-info :original-line))))))
+                    
+                    ;; Create overlay if we have valid content
+                    (when (and content (> (length content) 0))
+                      (org-include-inline--create-or-update-overlay 
+                       overlay-pos content current-buffer)
+                      
+                      ;; Register this org buffer as dependent on the source file
+                      (org-include-inline--register-source-file 
+                       source-file current-buffer)))))))))
+      
       (message "Refresh complete. Processed %d includes." count))))
+
+(defun org-include-inline--refresh-dependent-buffers ()
+  "Refresh all org buffers that include the current buffer's file."
+  (when buffer-file-name  
+    (let ((source-path (expand-file-name buffer-file-name)))
+      (dolist (buffer-entry org-include-inline--source-buffers)
+        (when (string= (car buffer-entry) source-path)
+          (dolist (org-buffer (cdr buffer-entry))
+            (when (buffer-live-p org-buffer)
+              (with-current-buffer org-buffer
+                (org-include-inline-refresh-buffer)))))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Minor Mode Definition
@@ -507,19 +554,24 @@ Available commands:
   :init-value nil
   :lighter " IInc"
   :keymap (let ((map (make-sparse-keymap)))
-            ;; (define-key map (kbd "C-c C-i r") 'org-include-inline-refresh-buffer) ; Example keybinding
             map)
   :group 'org-include-inline
   (if org-include-inline-mode
       (progn
         (message "org-include-inline-mode: Enabled. Initial refresh call.")
-        ;; Automatically refresh when the target file is saved
-        (add-hook 'after-save-hook #'org-include-inline-refresh-buffer nil t)
+        ;; 只在 org buffer 中添加刷新 hook
+        (when (derived-mode-p 'org-mode)
+          (add-hook 'after-save-hook #'org-include-inline-refresh-buffer nil t))
+        ;; 在所有 buffer 中添加依赖刷新 hook
+        (add-hook 'after-save-hook #'org-include-inline--refresh-dependent-buffers nil t)
         (org-include-inline-refresh-buffer))
     (progn
       (message "org-include-inline-mode: Disabled. Clearing overlays and hooks.")
       (remove-hook 'after-save-hook #'org-include-inline-refresh-buffer t)
+      (remove-hook 'after-save-hook #'org-include-inline--refresh-dependent-buffers t)
+      (org-include-inline--unregister-buffer (current-buffer))  ; 清理注册信息
       (org-include-inline--clear-overlays))))
+
 
 
 (provide 'org-include-inline)
