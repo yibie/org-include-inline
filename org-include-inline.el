@@ -44,6 +44,18 @@ When nil, you need to manually enable the mode with M-x org-include-inline-mode.
   :type 'boolean
   :group 'org-include-inline)
 
+(defcustom org-include-inline-auto-save t
+  "Whether to automatically save buffers after refreshing includes.
+When non-nil, buffers will be saved after their includes are refreshed
+to ensure the dependency relationships are persisted."
+  :type 'boolean
+  :group 'org-include-inline)
+
+(defcustom org-include-inline-auto-refresh-key "C-c C-x C-v"
+  "Key binding for auto-refresh command in org-include-inline-mode."
+  :type 'string
+  :group 'org-include-inline)
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Internal Variables and Data Structures
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -55,6 +67,10 @@ When nil, you need to manually enable the mode with M-x org-include-inline-mode.
   "Alist of (source-file . org-buffers) pairs.
 Each pair maps a source file to a list of org buffers that include it.")
 
+(defvar org-include-inline--storage-file
+  (expand-file-name "org-include-inline-storage.el" user-emacs-directory)
+  "File to store org-include-inline associations.")
+
 (defvar org-include-inline--block-types
   '("src" "example" "export" ":custom")
   "List of common block types for #+INCLUDE directives.")
@@ -63,15 +79,66 @@ Each pair maps a source file to a list of org buffers that include it.")
   '("emacs-lisp" "python" "sh" "C" "C++" "java" "javascript" "css" "html" "org" "latex")
   "List of common programming languages for src blocks.")
 
+(defvar-local org-include-inline--refreshing nil
+  "Flag to prevent recursive refresh.")
+
+(defvar org-include-inline--last-refresh-time (make-hash-table :test 'equal)
+  "Hash table to store last refresh time for each buffer.")
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Helper Functions
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defun org-include-inline--save-associations ()
+  "Save current associations to storage file."
+  (let ((data-to-save
+         (mapcar (lambda (entry)
+                   (cons (car entry) ; source-file path (string)
+                         ;; Convert buffer objects to their file paths
+                         (mapcar #'buffer-file-name
+                                (cl-remove-if-not
+                                 (lambda (b)
+                                   (and (bufferp b)
+                                        (buffer-live-p b)
+                                        (buffer-file-name b)))
+                                 (cdr entry)))))
+                 org-include-inline--source-buffers)))
+    ;; Filter out entries where the list of buffer files became empty
+    (setq data-to-save (cl-remove-if (lambda (entry) (null (cdr entry))) data-to-save))
+    (when data-to-save
+      (let ((inhibit-message t)) ;; 抑制保存消息
+        (with-temp-file org-include-inline--storage-file
+          (insert ";; -*- mode: emacs-lisp; lexical-binding: t; -*-\n")
+          (insert ";; Org Include Inline Storage\n")
+          (insert ";; This file is auto-generated. Do not edit by hand.\n\n")
+          (insert "(setq org-include-inline--source-buffers\n")
+          (insert (format "  '%S)\n" data-to-save)))))))
+
+(defun org-include-inline--load-associations ()
+  "Load associations from storage file."
+  (when (file-exists-p org-include-inline--storage-file)
+    (load org-include-inline--storage-file)
+    ;; 将文件路径转换为 buffer
+    (setq org-include-inline--source-buffers
+          (mapcar (lambda (entry)
+                    (cons (car entry)  ; source file path
+                          ;; Convert file paths to buffers, only if they exist
+                          (mapcar (lambda (file)
+                                   (or (find-buffer-visiting file)
+                                       (when (file-exists-p file)
+                                         (find-file-noselect file))))
+                                 (cdr entry))))
+                  org-include-inline--source-buffers))
+    ;; Remove any entries where all buffers failed to load
+    (setq org-include-inline--source-buffers
+          (cl-remove-if (lambda (entry) (null (cdr entry)))
+                        org-include-inline--source-buffers))))
 
 (defun org-include-inline--parse-include-directive (line-text)
   "Parse an #+INCLUDE line and return a plist with info.
 The line should be in format: 
 #+INCLUDE: \"FILE\" [BLOCK-TYPE LANGUAGE] [:lines \"N-M\"] or
-#+INCLUDE: \"FILE::HEADLINE\" or
+#+INCLUDE: \"FILE::*HEADLINE\" or
 #+INCLUDE: \"FILE::BLOCK-NAME\"
 
 BLOCK-TYPE can be 'src', 'example', etc.
@@ -87,11 +154,17 @@ LANGUAGE is the source code language when BLOCK-TYPE is 'src' or 'export'."
           (setq line-after-file (match-string 2 line-text))
           (message "DEBUG: Initial file match: %s, rest: %s" file line-after-file)
 
-          ;; Check if this is a named block reference (file::block-name)
+          ;; Check if this is a named block reference (file::block-name) or headline (file::*headline)
           (when (string-match "\\(.*\\)::\\([^:]+\\)\\'" file)
-            (setq named-block (match-string 2 file)
-                  file (match-string 1 file))
-            (message "DEBUG: Found named block: %s in file: %s" named-block file))
+            (let ((main-file (match-string 1 file))
+                  (spec (match-string 2 file)))
+              (if (or (string-prefix-p "*" spec)  ;; headline
+                      (string-prefix-p "#" spec)) ;; custom-id
+                  (setq headline-spec spec
+                        file main-file)
+                (setq named-block spec
+                      file main-file))
+              (message "DEBUG: Found spec: %s in file: %s" (or headline-spec named-block) file)))
 
           (when file
             (setq file (expand-file-name file (if buffer-file-name
@@ -123,20 +196,20 @@ LANGUAGE is the source code language when BLOCK-TYPE is 'src' or 'export'."
 
             ;; Determine type
             (cond
-             (named-block (setq type :named-block))
              (headline-spec (setq type :headline))
+             (named-block (setq type :named-block))
              (lines-spec (setq type :lines))
-             (t (setq type :lines) (setq lines-spec "1-")))
+             (t (setq type :lines) (setq lines-spec "1-"))))
 
-            (message "DEBUG: Final parse result - type: %s, named-block: %s" type named-block)
-            `(:file ,file 
-              :type ,type 
-              :lines-spec ,lines-spec 
-              :headline-spec ,headline-spec
-              :block-type ,block-type
-              :language ,language
-              :named-block ,named-block
-              :original-line ,line-text)))
+          (message "DEBUG: Final parse result - type: %s, named-block: %s, headline-spec: %s" type named-block headline-spec)
+          `(:file ,file 
+            :type ,type
+            :lines-spec ,lines-spec
+            :headline-spec ,headline-spec
+            :block-type ,block-type
+            :language ,language
+            :named-block ,named-block
+            :original-line ,line-text))
       nil)))
 
 
@@ -232,7 +305,7 @@ Returns only the content of the block, without the #+NAME:, #+begin_src, and #+e
                    (lambda (element)
                      (when (string= (org-element-property :name element) block-name)
                        element))
-                   nil t))) ; stop at first match
+                   nil t)))
       (message "DEBUG: Found block: %s" (if block "yes" "no"))
       (if block
           (let* ((content (org-element-property :value block)))
@@ -244,63 +317,82 @@ Returns only the content of the block, without the #+NAME:, #+begin_src, and #+e
         (format "Error: Named block \"%s\" not found in %s" 
                 block-name (file-name-nondirectory file))))))
 
-;; (defun org-include-inline--fetch-org-headline-content (file headline-spec)
-;;   "Fetch content of a specific headline from an Org FILE.
-;; HEADLINE-SPEC can be like \"*Headline Text\" or \"#custom-id\"."
-;;   (unless (file-readable-p file)
-;;     (message "Error: Org file not readable: %s" file)
-;;     (return-from org-include-inline--fetch-org-headline-content (format "Error: Org file not readable: %s" file)))
-;;   (unless headline-spec
-;;       (message "Error: No headline specification provided for file %s" file)
-;;       (return-from org-include-inline--fetch-org-headline-content (format "Error: No headline specified for %s" file)))
-
-;;   (with-temp-buffer
-;;     (insert-file-contents file)
-;;     (org-mode) ; Ensure Org mode is active for parsing
-;;     (let ((elements (org-element-parse-buffer 'greater-element))
-;;           (target-headline nil)
-;;           (content ""))
-;;       ;; Find the headline
-;;       (org-element-map elements 'headline
-;;         (lambda (headline)
-;;           (when target-headline (org-element-map-break)) ; Found it in a previous iteration
-;;           (let ((title (org-element-property :title headline))
-;;                 (custom-id (org-element-property :CUSTOM_ID headline))
-;;                 (raw-headline (org-element-property :raw-value headline))) ; For *Headline matching
-;;             (cond
-;;              ;; Match by CUSTOM_ID (e.g., #custom-id)
-;;              ((and (string-prefix-p "#" headline-spec)
-;;                    custom-id
-;;                    (string= custom-id (substring headline-spec 1)))
-;;               (setq target-headline headline))
-;;              ;; Match by full headline text (e.g., *Headline Text or ** Another)
-;;              ((and (string-prefix-p "*" headline-spec)
-;;                    raw-headline ; compare with the raw headline string from Org
-;;                    (string= (substring headline-spec (cl-position ?* headline-spec :from-end t)) ; Get text after last *
-;;                             (replace-regexp-in-string "^\\*+\\s-*" "" raw-headline))) ; Compare title part only
-;;               (setq target-headline headline))
-;;              ;; Match by named element (e.g. "my-element" for #+NAME: my-element)
-;;              ;; This requires org-element-map to also check for 'named-element' types
-;;              ;; or a different strategy if `headline-spec` does not start with * or #.
-;;              ;; For now, we assume headline-spec implies * or # if it's a headline include.
-;;              )))
-;;         nil nil t) ; Search affiliated keywords
-
-;;       (if target-headline
-;;           (let* ((contents-begin (org-element-property :contents-begin target-headline))
-;;                  (contents-end (org-element-property :contents-end target-headline))
-;;                  (raw-content (if (and contents-begin contents-end)
-;;                                   (buffer-substring-no-properties contents-begin contents-end)
-;;                                 "")))
-;;             ;; *** REPLACED complex regexp with string-trim ***
-;;             (setq content (string-trim raw-content))
-
-;;             ;; Basic truncation for very long headline contents (after trimming)
-;;             (if (> (length content) (* org-include-inline-max-lines-to-display 80)) ; Approx char limit
-;;                 (setq content (concat (substring content 0 (* org-include-inline-max-lines-to-display 80))
-;;                                       "\n... (headline content truncated)"))))
-;;         (setq content (format "Error: Headline/target \"%s\" not found in %s" headline-spec (file-name-nondirectory file)))))
-;;       content))
+(defun org-include-inline--fetch-org-headline-content (file headline-spec &optional only-contents lines-spec)
+  "Fetch content of a specific headline from an Org FILE.
+HEADLINE-SPEC 可以是 \"*Headline Text\" 或 \"#custom-id\"。
+如果 ONLY-CONTENTS 非 nil，则只返回正文内容（不含 property drawer、planning 等）。
+LINES-SPEC 形如 \"1-10\"，只返回正文的部分行。"
+  (unless (file-readable-p file)
+    (message "Error: Org file not readable: %s" file)
+    (return-from org-include-inline--fetch-org-headline-content (format "Error: Org file not readable: %s" file)))
+  (unless headline-spec
+    (message "Error: No headline specification provided for file %s" file)
+    (return-from org-include-inline--fetch-org-headline-content (format "Error: No headline specified for %s" file)))
+  (with-temp-buffer
+    (insert-file-contents file)
+    (org-mode)
+    (let* ((ast (org-element-parse-buffer 'greater-element))
+           (target-headline
+            (org-element-map ast 'headline
+              (lambda (headline)
+                (let ((title (org-element-property :raw-value headline))
+                      (custom-id (org-element-property :CUSTOM_ID headline)))
+                  (cond
+                   ;; 通过 #custom-id 匹配
+                   ((and (string-prefix-p "#" headline-spec)
+                         custom-id
+                         (string= custom-id (substring headline-spec 1)))
+                    headline)
+                   ;; 通过 *headline 匹配（忽略 * 数量）
+                   ((and (string-prefix-p "*" headline-spec)
+                         title
+                         (string= (string-trim (replace-regexp-in-string "^\\*+\\s-*" "" headline-spec))
+                                  (string-trim title)))
+                    headline))))
+              nil t)))
+      (if (not target-headline)
+          (format "Error: Headline/target '%s' not found in %s" headline-spec (file-name-nondirectory file))
+        (let* ((content-begin (org-element-property :contents-begin target-headline))
+               (content-end (org-element-property :contents-end target-headline))
+               (raw-content (if (and content-begin content-end)
+                                (buffer-substring-no-properties content-begin content-end)
+                              ""))
+               (final-content raw-content))
+          ;; 处理 only-contents
+          (when only-contents
+            ;; 去除 property drawer, planning 等，仅保留正文
+            (with-temp-buffer
+              (insert raw-content)
+              (goto-char (point-min))
+              ;; 跳过 property drawer
+              (when (re-search-forward "^:PROPERTIES:$" nil t)
+                (let ((prop-end (and (re-search-forward "^:END:$" nil t) (point))))
+                  (when prop-end (delete-region (point-min) prop-end))))
+              ;; 跳过 planning 行（如 DEADLINE, SCHEDULED）
+              (goto-char (point-min))
+              (while (looking-at "^\s-*\(DEADLINE:\|SCHEDULED:\|CLOSED:\)")
+                (forward-line 1))
+              (setq final-content (buffer-substring-no-properties (point) (point-max)))))
+          ;; 处理 lines-spec
+          (when (and lines-spec (not (string-empty-p final-content)))
+            (let* ((lines (split-string final-content "\n"))
+                   (start 1)
+                   (end (length lines)))
+              (cond
+               ((string-match "\\`\\([0-9]+\\)-\\([0-9]+\\)\\'" lines-spec)
+                (setq start (string-to-number (match-string 1 lines-spec)))
+                (setq end (string-to-number (match-string 2 lines-spec))))
+               ((string-match "\\`\\([0-9]+\\)-\\'" lines-spec)
+                (setq start (string-to-number (match-string 1 lines-spec))))
+               ((string-match "\\`-\\([0-9]+\\)\\'" lines-spec)
+                (setq end (string-to-number (match-string 1 lines-spec))))
+               ((string-match "\\`\\([0-9]+\\)\\'" lines-spec)
+                (setq start (string-to-number (match-string 1 lines-spec)))
+                (setq end start)))
+              (setq start (max 1 start))
+              (setq end (min (length lines) end))
+              (setq final-content (mapconcat #'identity (cl-subseq lines (1- start) end) "\n"))))
+          (string-trim final-content))))))
 
 (defun org-include-inline--create-or-update-overlay (point content &optional buffer)
   "Create or update an overlay at POINT to display CONTENT in BUFFER.
@@ -344,27 +436,37 @@ If BUFFER is nil, use current buffer. Ensures overlay stays attached to buffer."
 (defun org-include-inline--cleanup-on-kill ()
   "Clean up org-include-inline registrations when a buffer is killed."
   (when org-include-inline-mode
+    (remhash (current-buffer) org-include-inline--last-refresh-time)
     (org-include-inline--unregister-buffer (current-buffer))))
 
 (add-hook 'kill-buffer-hook #'org-include-inline--cleanup-on-kill)
 
 (defun org-include-inline--register-source-file (source-file org-buffer)
-  "Register that ORG-BUFFER includes SOURCE-FILE."
+  "Register that ORG-BUFFER (a buffer object) includes SOURCE-FILE (a path string)."
   (let* ((source-path (expand-file-name source-file))
          (existing-entry (assoc source-path org-include-inline--source-buffers)))
+    (message "DEBUG: Registering dependency - source: %s, buffer: %s" source-path (buffer-name org-buffer))
     (if existing-entry
-        (unless (memq org-buffer (cdr existing-entry))
-          (setcdr existing-entry (cons org-buffer (cdr existing-entry))))
-      (push (cons source-path (list org-buffer)) 
-            org-include-inline--source-buffers))))
+        (unless (member org-buffer (cdr existing-entry))
+          (setf (cdr existing-entry) (cons org-buffer (cdr existing-entry)))
+          (message "DEBUG: Added buffer to existing entry"))
+      (push (cons source-path (list org-buffer))
+            org-include-inline--source-buffers)
+      (message "DEBUG: Created new entry"))
+    (message "DEBUG: Current source-buffers after registration: %S" org-include-inline--source-buffers)
+    (org-include-inline--save-associations)))
 
 (defun org-include-inline--unregister-buffer (buffer)
-  "Remove BUFFER from all source file registrations."
+  "Remove BUFFER (a buffer object) from all source file registrations."
   (setq org-include-inline--source-buffers
         (cl-loop for (source-file . buffers) in org-include-inline--source-buffers
-                 for new-buffers = (remq buffer buffers)
-                 when new-buffers  ; 只保留还有其他 buffer 的条目
-                 collect (cons source-file new-buffers))))
+                 ;; `buffers` is a list of buffer objects after load_associations
+                 for new-buffers = (remq buffer buffers) ; Remove the specific buffer object
+                 when new-buffers
+                 collect (cons source-file new-buffers)
+                 ;; If new-buffers is empty, this source-file entry will be filtered out by save-associations
+                 ))
+  (org-include-inline--save-associations))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Core Functions
@@ -400,58 +502,63 @@ This function:
    - Creates overlay to display content
 4. Registers source file dependencies for auto-refresh"
   (interactive)
-  (message "Refreshing inline includes...")
-  (org-include-inline--clear-overlays)
-  
-  ;; Only process if we're in an org buffer with the mode enabled
-  (when (and (derived-mode-p 'org-mode) 
-             org-include-inline-mode)
-    (let ((current-buffer (current-buffer))
-          (count 0)
-          (source-files '()))  ; Track source files for this buffer
+  (unless org-include-inline--refreshing  ;; 防止递归
+    (let ((org-include-inline--refreshing t))
+      (message "DEBUG: Starting refresh in buffer %s" (buffer-name))
+      (org-include-inline--clear-overlays)
       
-      (save-excursion
-        (goto-char (point-min))
-        ;; Find all #+INCLUDE directives
-        (while (search-forward-regexp "^[ \t]*#\\+INCLUDE:" nil t)
-          (setq count (1+ count))
+      ;; Only process if we're in an org buffer with the mode enabled
+      (when (and (derived-mode-p 'org-mode) 
+                 org-include-inline-mode)
+        (let ((current-buffer (current-buffer))
+              (count 0)
+              (source-files '()))  ; Track source files for this buffer
           
-          (let* ((current-line-text
-                  (buffer-substring-no-properties 
-                   (line-beginning-position) (line-end-position)))
-                 (include-info (org-include-inline--parse-include-directive current-line-text)))
-            
-            (when include-info
-              (let ((source-file (plist-get include-info :file)))
-                ;; Add to source files list if not already there
-                (unless (member source-file source-files)
-                  (push source-file source-files))
+          (save-excursion
+            (goto-char (point-min))
+            ;; Find all #+INCLUDE directives
+            (message "DEBUG: Searching for #+INCLUDE directives")
+            (while (search-forward-regexp "^[ \t]*#\\+INCLUDE:" nil t)
+              (message "DEBUG: Found #+INCLUDE at line %d" (line-number-at-pos))
+              (setq count (1+ count))
+              
+              (let* ((current-line-text
+                      (buffer-substring-no-properties 
+                       (line-beginning-position) (line-end-position)))
+                     (include-info (org-include-inline--parse-include-directive current-line-text)))
                 
-                ;; Calculate overlay position (next line after #+INCLUDE)
-                (let ((overlay-pos (save-excursion
-                                   (forward-line 1)
-                                   (point))))
-                  
-                  ;; Fetch and display content based on include type
-                  (let ((content
-                         (cond
-                          ((eq (plist-get include-info :type) :lines)
-                           (org-include-inline--fetch-file-lines 
-                            source-file
-                            (plist-get include-info :lines-spec)
-                            (plist-get include-info :block-type)
-                            (plist-get include-info :language)))
-                          ((eq (plist-get include-info :type) :headline)
-                           (org-include-inline--fetch-org-headline-content 
-                            source-file
-                            (plist-get include-info :headline-spec)))
-                          ((eq (plist-get include-info :type) :named-block)
-                           (org-include-inline--fetch-named-block-content
-                            source-file
-                            (plist-get include-info :named-block)))
-                          (t 
-                           (format "Error: Unknown include type for %s" 
-                                 (plist-get include-info :original-line))))))
+                (when include-info
+                  (message "DEBUG: Parsed include info: %S" include-info)
+                  (let ((source-file (plist-get include-info :file)))
+                    ;; Add to source files list if not already there
+                    (unless (member source-file source-files)
+                      (push source-file source-files))
+                    
+                    ;; Calculate overlay position (next line after #+INCLUDE)
+                    (let ((overlay-pos (save-excursion
+                                       (forward-line 1)
+                                       (point))))
+                      
+                      ;; Fetch and display content based on include type
+                      (let ((content
+                             (cond
+                              ((eq (plist-get include-info :type) :lines)
+                               (org-include-inline--fetch-file-lines 
+                                source-file
+                                (plist-get include-info :lines-spec)
+                                (plist-get include-info :block-type)
+                                (plist-get include-info :language)))
+                              ((eq (plist-get include-info :type) :headline)
+                               (org-include-inline--fetch-org-headline-content 
+                                source-file
+                                (plist-get include-info :headline-spec)))
+                              ((eq (plist-get include-info :type) :named-block)
+                               (org-include-inline--fetch-named-block-content
+                                source-file
+                                (plist-get include-info :named-block)))
+                              (t 
+                               (format "Error: Unknown include type for %s" 
+                                       (plist-get include-info :original-line))))))
                     
                     ;; Create overlay if we have valid content
                     (when (and content (> (length content) 0))
@@ -462,18 +569,23 @@ This function:
                       (org-include-inline--register-source-file 
                        source-file current-buffer)))))))))
       
-      (message "Refresh complete. Processed %d includes." count))))
+      (message "Refresh complete. Processed %d includes." count))))))
 
 (defun org-include-inline--refresh-dependent-buffers ()
   "Refresh all org buffers that include the current buffer's file."
-  (when buffer-file-name  
-    (let ((source-path (expand-file-name buffer-file-name)))
-      (dolist (buffer-entry org-include-inline--source-buffers)
-        (when (string= (car buffer-entry) source-path)
-          (dolist (org-buffer (cdr buffer-entry))
-            (when (buffer-live-p org-buffer)
-              (with-current-buffer org-buffer
-                (org-include-inline-refresh-buffer)))))))))
+  (unless org-include-inline--refreshing  ;; 防止递归
+    (when buffer-file-name
+      (let ((org-include-inline--refreshing t)
+            (source-path (expand-file-name buffer-file-name)))
+        (message "DEBUG: Checking dependents of %s" source-path)
+        (dolist (buffer-entry org-include-inline--source-buffers)
+          (when (string= (car buffer-entry) source-path)
+            (message "DEBUG: Found dependent buffers: %S" (cdr buffer-entry))
+            (dolist (org-buffer (cdr buffer-entry))
+              (when (buffer-live-p org-buffer)
+                (message "DEBUG: Refreshing buffer %s" (buffer-name org-buffer))
+                (with-current-buffer org-buffer
+                  (org-include-inline-refresh-buffer))))))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Interactive #+INCLUDE Creation
@@ -702,61 +814,67 @@ Each property list contains :name, :type (src, example, etc), and :language (for
         (when org-include-inline-mode
           (org-include-inline-refresh-buffer))))))
 
-;;  (defun org-include-inline-insert-from-headline ()
-;;   "Interactively select an Org file and a headline to create an #+INCLUDE directive."
-;;   (interactive)
-;;   (let* ((current-org-buffer (current-buffer))
-;;          (target-org-file (read-file-name "Include headline from Org file: " nil nil t ".org")))
-;;     (unless (file-exists-p target-org-file)
-;;       (message "Org file does not exist: %s" target-org-file)
-;;       (error "File not found"))
-
-;;     (let ((smart-path (org-include-inline--get-smart-path target-org-file))
-;;           (headlines '()))
-;;       (with-temp-buffer
-;;         (insert-file-contents target-org-file)
-;;         (org-mode)
-;;         (org-element-map (org-element-parse-buffer 'greater-element) 'headline
-;;           (lambda (h)
-;;             (let* ((title (org-element-property :title h))
-;;                    (custom-id (org-element-property :CUSTOM_ID h))
-;;                    (level (org-element-property :level h))
-;;                    (display-title (format "%s %s%s"
-;;                                          (make-string level ?*) 
-;;                                          (if custom-id (format "[#%s] " custom-id) "")
-;;                                          (if (stringp title) title 
-;;                                            (prin1-to-string title)))))
-;;               (push (list display-title custom-id title level) headlines)))
-;;           nil nil t)) ; include affiliated keywords
-;;       (setq headlines (nreverse headlines))
-
-;;       (unless headlines
-;;         (message "No headlines found in %s" target-org-file)
-;;         (error "No headlines found"))
-
-;;       (let* ((choices (mapcar #'car headlines))
-;;              (chosen-display (completing-read "Select headline: " choices nil t)))
-;;         (when chosen-display
-;;           (let* ((selection (cl-find chosen-display headlines 
-;;                                      :key #'car :test #'string=))
-;;                  (custom-id (nth 1 selection))
-;;                  (title (nth 2 selection)) 
-;;                  (level (nth 3 selection))
-;;                  (include-spec (if custom-id
-;;                                    (format "#%s" custom-id)
-;;                                  (format "%s %s" 
-;;                                          (make-string level ?*) 
-;;                                          (if (stringp title) title (prin1-to-string title))))))
-;;             (with-current-buffer current-org-buffer
-;;               (insert (format "#+INCLUDE: \"%s::%s\"\n"
-;;                               smart-path include-spec))
-;;               (message "Inserted #+INCLUDE for headline \"%s\" from %s" 
-;;                        chosen-display
-;;                        smart-path)
-;;               (when org-include-inline-mode
-;;                 (org-include-inline-refresh-buffer))))))))) 
-
-
+(defun org-include-inline-insert-headline ()
+  "Interactively select and include a headline from an Org file.
+This allows including content from a specific headline/subtree in an Org file,
+either by selecting the headline text or its CUSTOM_ID if available."
+  (interactive)
+  (let* ((current-org-buffer (current-buffer))
+         (target-file (read-file-name "Include headline from Org file: " nil nil t ".org")))
+    
+    ;; 验证文件存在且是 org 文件
+    (unless (and (file-exists-p target-file)
+                 (string-match-p "\\.org$" target-file))
+      (user-error "File must be an existing .org file: %s" target-file))
+    
+    (let ((smart-path (org-include-inline--get-smart-path target-file))
+          (headlines '()))
+      
+      ;; 收集文件中的所有 headlines
+      (with-temp-buffer
+        (insert-file-contents target-file)
+        (org-mode)
+        (org-element-map (org-element-parse-buffer 'greater-element) 'headline
+          (lambda (h)
+            (let* ((title (org-element-property :raw-value h))
+                   (custom-id (org-element-property :CUSTOM_ID h))
+                   (level (org-element-property :level h))
+                   (display-title (format "%s %s%s"
+                                        (make-string level ?*)
+                                        (if custom-id (format "[#%s] " custom-id) "")
+                                        (if (stringp title) title
+                                          (prin1-to-string title)))))
+              (push (list display-title custom-id title level) headlines)))
+          nil nil t))
+      
+      (setq headlines (nreverse headlines))
+      
+      (unless headlines
+        (user-error "No headlines found in %s" target-file))
+      
+      ;; 让用户选择 headline
+      (let* ((choices (mapcar #'car headlines))
+             (chosen-display (completing-read "Select headline: " choices nil t)))
+        (when chosen-display
+          (let* ((selection (cl-find chosen-display headlines :key #'car :test #'string=))
+                 (custom-id (nth 1 selection))
+                 (title (nth 2 selection))
+                 (level (nth 3 selection))
+                 (include-spec (if custom-id
+                                 (format "#%s" custom-id)
+                               (format "*%s" title))))
+            
+            ;; 插入 INCLUDE 指令
+            (with-current-buffer current-org-buffer
+              (insert (format "#+INCLUDE: \"%s::%s\"\n"
+                            smart-path include-spec))
+              (message "Inserted #+INCLUDE for headline \"%s\" from %s"
+                      chosen-display
+                      (file-name-nondirectory target-file))
+              
+              ;; 如果 mode 已启用，刷新显示
+              (when org-include-inline-mode
+                (org-include-inline-refresh-buffer)))))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Minor Mode Definition
@@ -769,6 +887,46 @@ Each property list contains :name, :type (src, example, etc), and :language (for
              org-include-inline-auto-enable-in-org-mode)
     (org-include-inline-mode 1)))
 (add-hook 'org-mode-hook #'org-include-inline-maybe-enable)
+
+(defun org-include-inline--after-save-handler ()
+  "Handle after-save-hook for source files."
+  (when (and buffer-file-name
+             (not org-include-inline--refreshing))  ; 防止递归
+    (let ((org-include-inline--refreshing t)
+          (source-path (expand-file-name buffer-file-name)))
+      ;; 如果当前保存的是源文件
+      (when (assoc source-path org-include-inline--source-buffers)
+        (message "DEBUG: Source file saved: %s" source-path)
+        (dolist (buffer (cdr (assoc source-path org-include-inline--source-buffers)))
+          (when (buffer-live-p buffer)
+            (message "DEBUG: Refreshing dependent buffer: %s" (buffer-name buffer))
+            (with-current-buffer buffer
+              (org-include-inline-refresh-buffer)
+              (puthash buffer (float-time) org-include-inline--last-refresh-time)))))
+      
+      ;; 如果当前保存的是 org buffer
+      (when (and org-include-inline-mode
+                 (derived-mode-p 'org-mode))
+        (org-include-inline-refresh-buffer)
+        (puthash (current-buffer) (float-time) org-include-inline--last-refresh-time)))))
+
+(defun org-include-inline--setup-file-watch ()
+  "Set up file watching for source files."
+  (dolist (entry org-include-inline--source-buffers)
+    (let ((source-file (car entry)))
+      (when (and (stringp source-file)
+                 (file-exists-p source-file))
+        (file-notify-add-watch
+         source-file
+         '(change)
+         (lambda (event)
+           (when (eq (nth 1 event) 'changed)
+             (let ((source-path (nth 2 event)))
+               (dolist (buffer (cdr (assoc source-path org-include-inline--source-buffers)))
+                 (when (buffer-live-p buffer)
+                   (with-current-buffer buffer
+                     (org-include-inline-refresh-buffer)
+                     (puthash buffer (float-time) org-include-inline--last-refresh-time))))))))))))
 
 ;;;###autoload
 (define-minor-mode org-include-inline-mode
@@ -785,29 +943,39 @@ Available commands:
   `org-include-inline-insert-file'          - Insert a directive to include an entire file
   `org-include-inline-insert-from-lines'    - Insert a directive to include specific lines from a file
   `org-include-inline-insert-as-block'      - Insert a directive to include file as a block (src, example, etc.)
-  `org-include-inline-insert-named-block'   - Insert a directive to include a named block from an Org file"
+  `org-include-inline-insert-named-block'   - Insert a directive to include a named block from an Org file
+  `org-include-inline-insert-headline'      - Insert a directive to include a headline/subtree from an Org file"
   :init-value nil
   :lighter " IInc"
   :keymap (let ((map (make-sparse-keymap)))
+            (define-key map (kbd org-include-inline-auto-refresh-key) 
+                        #'org-include-inline-refresh-buffer)
             map)
   :group 'org-include-inline
   (if org-include-inline-mode
       (progn
-        (message "org-include-inline-mode: Enabled. Initial refresh call.")
-        ;; 只在 org buffer 中添加刷新 hook
-        (when (derived-mode-p 'org-mode)
-          (add-hook 'after-save-hook #'org-include-inline-refresh-buffer nil t))
-        ;; 在所有 buffer 中添加依赖刷新 hook
-        (add-hook 'after-save-hook #'org-include-inline--refresh-dependent-buffers nil t)
-        (org-include-inline-refresh-buffer))
+        (message "DEBUG: Enabling org-include-inline-mode in %s" (buffer-name))
+        (unless org-include-inline--source-buffers
+          (org-include-inline--load-associations))
+        (add-hook 'after-save-hook #'org-include-inline--after-save-handler nil t)
+        (add-hook 'after-revert-hook #'org-include-inline-refresh-buffer nil t)
+        (add-hook 'window-configuration-change-hook #'org-include-inline-refresh-buffer nil t)
+        (let ((org-include-inline--refreshing t))
+          (org-include-inline-refresh-buffer)
+          (puthash (current-buffer) (float-time) org-include-inline--last-refresh-time)))
     (progn
-      (message "org-include-inline-mode: Disabled. Clearing overlays and hooks.")
-      (remove-hook 'after-save-hook #'org-include-inline-refresh-buffer t)
-      (remove-hook 'after-save-hook #'org-include-inline--refresh-dependent-buffers t)
-      (org-include-inline--unregister-buffer (current-buffer))  ; 清理注册信息
+      (message "DEBUG: Disabling org-include-inline-mode in %s" (buffer-name))
+      (remove-hook 'after-save-hook #'org-include-inline--after-save-handler t)
+      (remove-hook 'after-revert-hook #'org-include-inline-refresh-buffer t)
+      (remove-hook 'window-configuration-change-hook #'org-include-inline-refresh-buffer t)
+      (remhash (current-buffer) org-include-inline--last-refresh-time)
+      (org-include-inline--unregister-buffer (current-buffer))
       (org-include-inline--clear-overlays))))
 
+(defalias 'org-include-inline-refresh 'org-include-inline-refresh-buffer)
 
+(with-eval-after-load 'org
+  (define-key org-mode-map (kbd "C-c C-x C-v") #'org-include-inline-refresh-buffer))
 
 (provide 'org-include-inline)
 ;;; org-include-inline.el ends here

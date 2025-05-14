@@ -16,6 +16,7 @@ org-include-inline enhances the Org mode editing experience by showing included 
   - Include specific line ranges
   - Include as source code blocks with syntax highlighting
   - Include as example blocks or other block types
+  - Include specific headlines/subtrees using title or CUSTOM_ID
 - **Interactive Creation**: Easy-to-use commands for creating include directives
 - **Toggle Visibility**: Show/hide included content with a single command
 - **Auto-refresh**: 
@@ -46,11 +47,17 @@ M-x org-include-inline-mode
 - `M-x org-include-inline-insert-from-lines` - Include specific lines from a file
 - `M-x org-include-inline-insert-as-block` - Include file as a block (src, example, etc.)
 - `M-x org-include-inline-insert-named-block` - Include a named block from an Org file
+- `M-x org-include-inline-insert-headline` - Include a headline/subtree from an Org file
 
 When using `org-include-inline-insert-named-block`, you can:
 1. Select an Org file containing named blocks
 2. Choose from a list of available named blocks (showing block type and language)
 3. The block will be included with its original type and properties
+
+When using `org-include-inline-insert-headline`, you can:
+1. Select an Org file containing headlines
+2. Choose from a list of available headlines (showing level and CUSTOM_ID if available)
+3. The headline will be included with all its content
 
 3. Auto-refresh after modified the source file:
 - `C-c '` go to the source file.
@@ -83,7 +90,33 @@ When using `org-include-inline-insert-named-block`, you can:
 
 # Include a named block from an Org file
 #+INCLUDE: "path/to/file.org::block-name"
+
+# Include a specific headline/subtree (with all its content)
+#+INCLUDE: "path/to/file.org::*Target_Headline"
+
+# Include a subtree using its CUSTOM_ID
+#+INCLUDE: "path/to/file.org::#custom-id-value"
+
 ```
+
+## Auto-refresh
+
+There are several ways to refresh the included content:
+
+1. **Automatic Refresh**:
+   - Content updates automatically when source files are saved
+   - Refreshes when buffer is reverted or window configuration changes
+   - Intelligent dependency tracking ensures all dependent org buffers are refreshed
+
+2. **Manual Refresh**:
+   - Use `C-c C-x C-v` (default key binding) to refresh manually
+   - Click with mouse-1 (left click) on the included content
+   - Call `M-x org-include-inline-refresh` or `M-x org-include-inline-refresh-buffer`
+
+3. **Customization**:
+   ```elisp
+   ;; Customize the refresh key binding
+   (setq org-include-inline-auto-refresh-key "C-c C-x C-v")
 
 ## Commands
 
@@ -91,6 +124,9 @@ When using `org-include-inline-insert-named-block`, you can:
 - `org-include-inline-toggle-visibility` - Toggle visibility of all inline content
 - `org-include-inline-insert-file` - Insert a directive to include an entire file
 - `org-include-inline-insert-from-lines` - Insert a directive to include specific lines
+- `org-include-inline-insert-as-block` - Insert a directive to include a file as a block
+- `org-include-inline-insert-named-block` - Insert a directive to include a named block from an Org file
+- `org-include-inline-insert-headline` - Insert a directive to include a headline/subtree from an Org file
 
 ## Customization
 
@@ -149,3 +185,6 @@ This project is licensed under the GNU General Public License v3.0.
 ## Author
 
 Yibie (gunshotbox@gmail.com)
+
+
+   ```
