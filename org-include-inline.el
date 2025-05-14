@@ -320,8 +320,8 @@ Returns only the content of the block, without the #+NAME:, #+begin_src, and #+e
 (defun org-include-inline--fetch-org-headline-content (file headline-spec &optional only-contents lines-spec)
   "Fetch content of a specific headline from an Org FILE.
 HEADLINE-SPEC 可以是 \"*Headline Text\" 或 \"#custom-id\"。
-如果 ONLY-CONTENTS 非 nil，则只返回正文内容（不含 property drawer、planning 等）。
-LINES-SPEC 形如 \"1-10\"，只返回正文的部分行。"
+If ONLY-CONTENTS is non-nil, return only the content (excluding property drawers, planning, etc.).
+LINES-SPEC is like \"1-10\", returning only a portion of the content."
   (unless (file-readable-p file)
     (message "Error: Org file not readable: %s" file)
     (return-from org-include-inline--fetch-org-headline-content (format "Error: Org file not readable: %s" file)))
@@ -502,7 +502,7 @@ This function:
    - Creates overlay to display content
 4. Registers source file dependencies for auto-refresh"
   (interactive)
-  (unless org-include-inline--refreshing  ;; 防止递归
+  (unless org-include-inline--refreshing  
     (let ((org-include-inline--refreshing t))
       (message "DEBUG: Starting refresh in buffer %s" (buffer-name))
       (org-include-inline--clear-overlays)
@@ -821,8 +821,7 @@ either by selecting the headline text or its CUSTOM_ID if available."
   (interactive)
   (let* ((current-org-buffer (current-buffer))
          (target-file (read-file-name "Include headline from Org file: " nil nil t ".org")))
-    
-    ;; 验证文件存在且是 org 文件
+
     (unless (and (file-exists-p target-file)
                  (string-match-p "\\.org$" target-file))
       (user-error "File must be an existing .org file: %s" target-file))
@@ -830,7 +829,6 @@ either by selecting the headline text or its CUSTOM_ID if available."
     (let ((smart-path (org-include-inline--get-smart-path target-file))
           (headlines '()))
       
-      ;; 收集文件中的所有 headlines
       (with-temp-buffer
         (insert-file-contents target-file)
         (org-mode)
@@ -852,7 +850,6 @@ either by selecting the headline text or its CUSTOM_ID if available."
       (unless headlines
         (user-error "No headlines found in %s" target-file))
       
-      ;; 让用户选择 headline
       (let* ((choices (mapcar #'car headlines))
              (chosen-display (completing-read "Select headline: " choices nil t)))
         (when chosen-display
@@ -864,7 +861,6 @@ either by selecting the headline text or its CUSTOM_ID if available."
                                  (format "#%s" custom-id)
                                (format "*%s" title))))
             
-            ;; 插入 INCLUDE 指令
             (with-current-buffer current-org-buffer
               (insert (format "#+INCLUDE: \"%s::%s\"\n"
                             smart-path include-spec))
@@ -872,7 +868,6 @@ either by selecting the headline text or its CUSTOM_ID if available."
                       chosen-display
                       (file-name-nondirectory target-file))
               
-              ;; 如果 mode 已启用，刷新显示
               (when org-include-inline-mode
                 (org-include-inline-refresh-buffer)))))))))
 
@@ -891,10 +886,9 @@ either by selecting the headline text or its CUSTOM_ID if available."
 (defun org-include-inline--after-save-handler ()
   "Handle after-save-hook for source files."
   (when (and buffer-file-name
-             (not org-include-inline--refreshing))  ; 防止递归
+             (not org-include-inline--refreshing))  
     (let ((org-include-inline--refreshing t)
           (source-path (expand-file-name buffer-file-name)))
-      ;; 如果当前保存的是源文件
       (when (assoc source-path org-include-inline--source-buffers)
         (message "DEBUG: Source file saved: %s" source-path)
         (dolist (buffer (cdr (assoc source-path org-include-inline--source-buffers)))
@@ -904,7 +898,6 @@ either by selecting the headline text or its CUSTOM_ID if available."
               (org-include-inline-refresh-buffer)
               (puthash buffer (float-time) org-include-inline--last-refresh-time)))))
       
-      ;; 如果当前保存的是 org buffer
       (when (and org-include-inline-mode
                  (derived-mode-p 'org-mode))
         (org-include-inline-refresh-buffer)

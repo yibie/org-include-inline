@@ -62,7 +62,7 @@ When using `org-include-inline-insert-headline`, you can:
 3. Auto-refresh after modified the source file:
 - `C-c '` go to the source file.
 - Modify the source file.
-- Save the source file(⚠️Must save the file with command, like `C-x C-s`, or `M-x save-buffer`).
+- Save the source file
 - The included content will be updated automatically.
 
 ![Interactive Line Selection](images/figure2.gif)
