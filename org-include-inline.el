@@ -1041,7 +1041,7 @@ Otherwise, call the original function OLD-FN with PATH and ARG."
                   ;; Open the file first
                   (find-file file)
                   ;; Then try to find the ID
-                  (or (org-find-entry-with-id id)
+                  (or (org-id-goto id)
                       (user-error "Cannot find ID \"%s\" in file %s" 
                                 id (file-name-nondirectory file))))
               (error
