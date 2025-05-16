@@ -19,6 +19,7 @@
 (require 'org)
 (require 'org-element)
 (require 'org-src)  
+(require 'org-id)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Customization
@@ -54,6 +55,13 @@ to ensure the dependency relationships are persisted."
 (defcustom org-include-inline-auto-refresh-key "C-c C-x C-v"
   "Key binding for auto-refresh command in org-include-inline-mode."
   :type 'string
+  :group 'org-include-inline)
+
+(defcustom org-include-inline-additional-id-formats nil
+  "Additional regular expressions to recognize org IDs.
+Each entry should be a regular expression string that matches your custom ID format.
+For example: '(\"\\`[A-Z]+[0-9]+\\'\") to match IDs like 'ABC123'."
+  :type '(repeat string)
   :group 'org-include-inline)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -139,12 +147,13 @@ Each pair maps a source file to a list of org buffers that include it.")
 The line should be in format: 
 #+INCLUDE: \"FILE\" [BLOCK-TYPE LANGUAGE] [:lines \"N-M\"] or
 #+INCLUDE: \"FILE::*HEADLINE\" or
-#+INCLUDE: \"FILE::BLOCK-NAME\"
+#+INCLUDE: \"FILE::BLOCK-NAME\" or
+#+INCLUDE: \"FILE::ID\"
 
 BLOCK-TYPE can be 'src', 'example', etc.
 LANGUAGE is the source code language when BLOCK-TYPE is 'src' or 'export'."
   (let ((case-fold-search t)
-        file type lines-spec headline-spec block-type language named-block
+        file type lines-spec headline-spec block-type language named-block id-spec
         line-after-file remainder-after-headline)
 
     ;; 1. Match #+INCLUDE: "FILE" part and get the rest of the line
@@ -154,17 +163,28 @@ LANGUAGE is the source code language when BLOCK-TYPE is 'src' or 'export'."
           (setq line-after-file (match-string 2 line-text))
           (message "DEBUG: Initial file match: %s, rest: %s" file line-after-file)
 
-          ;; Check if this is a named block reference (file::block-name) or headline (file::*headline)
+          ;; Check if this is a named block reference (file::block-name) or headline (file::*headline) or ID
           (when (string-match "\\(.*\\)::\\([^:]+\\)\\'" file)
             (let ((main-file (match-string 1 file))
                   (spec (match-string 2 file)))
-              (if (or (string-prefix-p "*" spec)  ;; headline
-                      (string-prefix-p "#" spec)) ;; custom-id
-                  (setq headline-spec spec
-                        file main-file)
-                (setq named-block spec
+              (cond
+               ;; ID format
+               ((org-include-inline--is-valid-org-id-p spec)
+                (setq type :id
+                      id-spec spec
                       file main-file))
-              (message "DEBUG: Found spec: %s in file: %s" (or headline-spec named-block) file)))
+               ;; Headline format
+               ((or (string-prefix-p "*" spec)
+                    (string-prefix-p "#" spec))
+                (setq headline-spec spec
+                      file main-file
+                      type :headline))
+               ;; Named block
+               (t
+                (setq named-block spec
+                      file main-file
+                      type :named-block)))
+              (message "DEBUG: Found spec: %s of type: %s" spec type)))
 
           (when file
             (setq file (expand-file-name file (if buffer-file-name
@@ -198,10 +218,10 @@ LANGUAGE is the source code language when BLOCK-TYPE is 'src' or 'export'."
             (cond
              (headline-spec (setq type :headline))
              (named-block (setq type :named-block))
-             (lines-spec (setq type :lines))
-             (t (setq type :lines) (setq lines-spec "1-"))))
+             ((and (not type) lines-spec) (setq type :lines))
+             ((not type) (setq type :lines) (setq lines-spec "1-"))))
 
-          (message "DEBUG: Final parse result - type: %s, named-block: %s, headline-spec: %s" type named-block headline-spec)
+          (message "DEBUG: Final parse result - type: %s, id-spec: %s" type id-spec)
           `(:file ,file 
             :type ,type
             :lines-spec ,lines-spec
@@ -209,6 +229,7 @@ LANGUAGE is the source code language when BLOCK-TYPE is 'src' or 'export'."
             :block-type ,block-type
             :language ,language
             :named-block ,named-block
+            :id-spec ,id-spec
             :original-line ,line-text))
       nil)))
 
@@ -394,6 +415,68 @@ LINES-SPEC is like \"1-10\", returning only a portion of the content."
               (setq final-content (mapconcat #'identity (cl-subseq lines (1- start) end) "\n"))))
           (string-trim final-content))))))
 
+(defun org-include-inline--fetch-org-id-content (id &optional only-contents lines-spec)
+  "Fetch content of an entry with ID.
+ID is the entry ID (UUID, internal format, or custom format).
+If ONLY-CONTENTS is non-nil, return only the contents (excluding properties).
+LINES-SPEC is like \"1-10\", returning only those lines."
+  (require 'org-id)
+  (message "DEBUG: Fetching content for ID: %s" id)
+  (if-let ((marker (org-id-find id t)))
+      (with-current-buffer (marker-buffer marker)
+        (save-excursion
+          (goto-char marker)
+          (message "DEBUG: Found ID at position %d in buffer %s" (point) (buffer-name))
+          ;; 确保我们在标题的开始位置
+          (beginning-of-line)
+          ;; 获取当前 entry 的内容
+          (let ((content
+                 (save-restriction
+                   ;; 限制范围到当前 subtree
+                   (org-narrow-to-subtree)
+                   (let ((raw-content (buffer-substring-no-properties (point) (point-max))))
+                     (with-temp-buffer
+                       (org-mode)
+                       (insert raw-content)
+                       ;; 保留标题行，但跳过 drawer
+                       (goto-char (point-min))
+                       (forward-line 1)  ;; 移动到标题行之后
+                       ;; 跳过所有 drawer
+                       (while (looking-at org-drawer-regexp)
+                         (let ((drawer-end (save-excursion
+                                           (re-search-forward "^[ \t]*:END:[ \t]*$" nil t))))
+                           (when drawer-end
+                             (delete-region (point) (progn (goto-char drawer-end) 
+                                                         (forward-line 1)
+                                                         (point))))))
+                       ;; 跳过 planning 信息
+                       (goto-char (point-min))
+                       (forward-line 1)  ;; 再次移动到标题行之后
+                       (while (looking-at org-planning-line-re)
+                         (delete-region (point) (progn (forward-line 1) (point))))
+                       ;; 获取处理后的内容
+                       (buffer-substring-no-properties (point-min) (point-max)))))))
+            (message "DEBUG: Initial content length: %d" (length (or content "")))
+            ;; 处理 lines-spec
+            (when (and content lines-spec)
+              (let* ((lines (split-string content "\n"))
+                     (start 1)
+                     (end (length lines)))
+                (when (string-match "\\`\\([0-9]+\\)-\\([0-9]+\\)\\'" lines-spec)
+                  (setq start (string-to-number (match-string 1 lines-spec))
+                        end (string-to-number (match-string 2 lines-spec)))
+                  (setq start (max 1 start)
+                        end (min (length lines) end))
+                  (setq content (mapconcat #'identity 
+                                         (cl-subseq lines (1- start) end)
+                                         "\n")))))
+            (let ((final-content (if content (string-trim content) "")))
+              (message "DEBUG: Final content length: %d" (length final-content))
+              (or (and final-content (not (string-empty-p final-content))
+                      final-content)
+                  (format "Error: No content found for ID %s" id))))))
+    (format "Error: Entry with ID %s not found" id)))
+
 (defun org-include-inline--create-or-update-overlay (point content &optional buffer)
   "Create or update an overlay at POINT to display CONTENT in BUFFER.
 If BUFFER is nil, use current buffer. Ensures overlay stays attached to buffer."
@@ -556,6 +639,9 @@ This function:
                                (org-include-inline--fetch-named-block-content
                                 source-file
                                 (plist-get include-info :named-block)))
+                              ((eq (plist-get include-info :type) :id)
+                               (org-include-inline--fetch-org-id-content
+                                (plist-get include-info :id-spec)))
                               (t 
                                (format "Error: Unknown include type for %s" 
                                        (plist-get include-info :original-line))))))
@@ -871,6 +957,58 @@ either by selecting the headline text or its CUSTOM_ID if available."
               (when org-include-inline-mode
                 (org-include-inline-refresh-buffer)))))))))
 
+(defun org-include-inline--get-entries-with-ids (file)
+  "Get all entries with IDs from FILE.
+Returns an alist, format ((title . id) ...) where title includes hierarchy and text.
+FILE is the file to search for entries with IDs."
+  (with-temp-buffer
+    (insert-file-contents file)
+    (org-mode)
+    (org-element-map (org-element-parse-buffer 'greater-element) 'headline
+      (lambda (h)
+        (let* ((title (org-element-property :raw-value h))
+               (level (org-element-property :level h))
+               (id (org-element-property :ID h)))
+          (when id
+            (cons (format "%s %s"
+                         (make-string level ?*)
+                         (if (stringp title) title
+                           (prin1-to-string title)))
+                  id))))
+      nil nil t)))
+
+(defun org-include-inline-insert-id ()
+  "Interactively insert an #+INCLUDE directive based on ID.
+Allows selecting an entry with ID from an Org file."
+  (interactive)
+  (let* ((current-org-buffer (current-buffer))
+         (target-file (read-file-name "Select Org file containing target ID: " nil nil t ".org")))
+    
+    (unless (and (file-exists-p target-file)
+                 (string-match-p "\\.org$" target-file))
+      (user-error "File must be an existing .org file: %s" target-file))
+    
+    (let* ((smart-path (org-include-inline--get-smart-path target-file))
+           (entries (org-include-inline--get-entries-with-ids target-file)))
+      
+      (unless entries
+        (user-error "No entries with IDs found in %s" target-file))
+      
+      (let* ((choices (mapcar (lambda (entry)
+                               (format "%s [%s]" (car entry) (cdr entry)))
+                             entries))
+             (chosen (completing-read "Select entry to include: " choices nil t))
+             (chosen-id (cdr (nth (cl-position chosen choices :test #'string=)
+                                 entries))))
+        
+        (with-current-buffer current-org-buffer
+          (insert (format "#+INCLUDE: \"%s::%s\"\n"
+                         smart-path chosen-id))
+          (message "Inserted #+INCLUDE directive for ID %s" chosen-id)
+          
+          (when org-include-inline-mode
+            (org-include-inline-refresh-buffer)))))))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Minor Mode Definition
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -921,6 +1059,59 @@ either by selecting the headline text or its CUSTOM_ID if available."
                      (org-include-inline-refresh-buffer)
                      (puthash buffer (float-time) org-include-inline--last-refresh-time))))))))))))
 
+(defun org-include-inline--is-valid-org-id-p (id)
+  "Check if ID is a valid Org ID string.
+Supports various ID formats including UUID, org's internal format, and timestamp-based IDs.
+Also supports custom formats defined in `org-include-inline-additional-id-formats'."
+  (and (stringp id)
+       (or
+        ;; UUID format: 8-4-4-4-12 hex digits
+        (string-match-p "\\`[A-Fa-f0-9]\\{8\\}-[A-Fa-f0-9]\\{4\\}-[A-Fa-f0-9]\\{4\\}-[A-Fa-f0-9]\\{4\\}-[A-Fa-f0-9]\\{12\\}\\'" id)
+        ;; Org's internal format: 32 hex digits
+        (string-match-p "\\`[A-Fa-f0-9]\\{32\\}\\'" id)
+        ;; Timestamp format: YYYY-MM-DD-HH-MM-SS.XXXXXX_XXXXX
+        (string-match-p "\\`[0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\}-[0-9]\\{2\\}-[0-9]\\{2\\}-[0-9]\\{2\\}\\.[0-9]+_[A-Za-z0-9]+\\'" id)
+        ;; Check against additional custom formats
+        (cl-some (lambda (pattern)
+                   (string-match-p pattern id))
+                 org-include-inline-additional-id-formats))))
+
+(defun org-include-inline--advice-org-link-open-as-file (old-fn path arg)
+  "Advice for `org-link-open-as-file' to handle org-include-inline ID links.
+If PATH contains an ID reference, find and jump to that ID.
+Otherwise, call the original function OLD-FN with PATH and ARG."
+  (if (and path
+           (string-match "\\(.*\\)::\\([A-Za-z0-9-]+\\)\\'" path))
+      (let* ((file (match-string 1 path))
+             (id (match-string 2 path)))
+        (message "DEBUG: Handling potential ID link: %s in file: %s" id file)
+        ;; Check if it looks like an ID
+        (if (org-include-inline--is-valid-org-id-p id)
+            (condition-case err
+                (progn
+                  ;; Open the file first
+                  (find-file file)
+                  ;; Then try to find the ID
+                  (or (org-find-entry-with-id id)
+                      (user-error "无法在文件 %s 中找到 ID 为 \"%s\" 的 entry" 
+                                (file-name-nondirectory file) id)))
+              (error
+               (message "Error jumping to ID %s: %S" id err)
+               (user-error "无法打开文件 %s 或找到 ID \"%s\"" 
+                         (file-name-nondirectory file) id)))
+          ;; Not an ID, call original function
+          (funcall old-fn path arg)))
+    ;; No ID pattern, call original function
+    (funcall old-fn path arg)))
+
+;; Remove old advice if it exists
+(when (advice-member-p #'org-include-inline--advice-org-open-at-point 'org-open-at-point)
+  (advice-remove 'org-open-at-point #'org-include-inline--advice-org-open-at-point))
+
+;; Add new advice
+(unless (advice-member-p #'org-include-inline--advice-org-link-open-as-file 'org-link-open-as-file)
+  (advice-add 'org-link-open-as-file :around #'org-include-inline--advice-org-link-open-as-file))
+
 ;;;###autoload
 (define-minor-mode org-include-inline-mode
   "Toggle display of #+INCLUDE contents inline in Org buffers.
@@ -937,7 +1128,8 @@ Available commands:
   `org-include-inline-insert-from-lines'    - Insert a directive to include specific lines from a file
   `org-include-inline-insert-as-block'      - Insert a directive to include file as a block (src, example, etc.)
   `org-include-inline-insert-named-block'   - Insert a directive to include a named block from an Org file
-  `org-include-inline-insert-headline'      - Insert a directive to include a headline/subtree from an Org file"
+  `org-include-inline-insert-headline'      - Insert a directive to include a headline/subtree from an Org file
+  `org-include-inline-insert-id'            - Insert a directive to include an entry with ID"
   :init-value nil
   :lighter " IInc"
   :keymap (let ((map (make-sparse-keymap)))
