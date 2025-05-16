@@ -16,7 +16,7 @@ org-include-inline enhances the Org mode editing experience by showing included 
   - Include specific line ranges
   - Include as source code blocks with syntax highlighting
   - Include as example blocks or other block types
-  - Include specific headlines/subtrees using title or CUSTOM_ID
+  - Include specific headlines/subtrees using title, CUSTOM_ID, or ID
 - **Interactive Creation**: Easy-to-use commands for creating include directives
 - **Toggle Visibility**: Show/hide included content with a single command
 - **Auto-refresh**: 
@@ -48,6 +48,7 @@ M-x org-include-inline-mode
 - `M-x org-include-inline-insert-as-block` - Include file as a block (src, example, etc.)
 - `M-x org-include-inline-insert-named-block` - Include a named block from an Org file
 - `M-x org-include-inline-insert-headline` - Include a headline/subtree from an Org file
+- `M-x org-include-inline-insert-id` - Include an entry with ID from an Org file
 
 When using `org-include-inline-insert-named-block`, you can:
 1. Select an Org file containing named blocks
@@ -59,8 +60,18 @@ When using `org-include-inline-insert-headline`, you can:
 2. Choose from a list of available headlines (showing level and CUSTOM_ID if available)
 3. The headline will be included with all its content
 
+When using `org-include-inline-insert-id`, you can:
+1. Select an Org file containing entries with IDs
+2. Choose from a list of available entries (showing their headlines and IDs)
+3. The entry will be included with all its content
+
+![Interactive ID Selection](images/figure3.gif)
+
+
 3. Auto-refresh after modified the source file:
-- `C-c '` go to the source file.
+- `C-c '` go to the source file. When used on:
+  - Regular includes: Opens the source file
+  - ID includes: Opens the source file and jumps to the entry with that ID
 - Modify the source file.
 - Save the source file
 - The included content will be updated automatically.
@@ -97,6 +108,9 @@ When using `org-include-inline-insert-headline`, you can:
 # Include a subtree using its CUSTOM_ID
 #+INCLUDE: "path/to/file.org::#custom-id-value"
 
+# Include a subtree using its ID
+#+INCLUDE: "path/to/file.org::B5623BAE-013E-42C3-9956-3D367716B3CC"
+
 ```
 
 ## Auto-refresh
@@ -127,6 +141,7 @@ There are several ways to refresh the included content:
 - `org-include-inline-insert-as-block` - Insert a directive to include a file as a block
 - `org-include-inline-insert-named-block` - Insert a directive to include a named block from an Org file
 - `org-include-inline-insert-headline` - Insert a directive to include a headline/subtree from an Org file
+- `org-include-inline-insert-id` - Insert a directive to include an entry with ID from an Org file
 
 ## Customization
 
