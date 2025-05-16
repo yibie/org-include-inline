@@ -161,7 +161,6 @@ LANGUAGE is the source code language when BLOCK-TYPE is 'src' or 'export'."
         (progn
           (setq file (match-string 1 line-text))
           (setq line-after-file (match-string 2 line-text))
-          (message "DEBUG: Initial file match: %s, rest: %s" file line-after-file)
 
           ;; Check if this is a named block reference (file::block-name) or headline (file::*headline) or ID
           (when (string-match "\\(.*\\)::\\([^:]+\\)\\'" file)
@@ -184,7 +183,7 @@ LANGUAGE is the source code language when BLOCK-TYPE is 'src' or 'export'."
                 (setq named-block spec
                       file main-file
                       type :named-block)))
-              (message "DEBUG: Found spec: %s of type: %s" spec type)))
+              ))
 
           (when file
             (setq file (expand-file-name file (if buffer-file-name
@@ -221,7 +220,6 @@ LANGUAGE is the source code language when BLOCK-TYPE is 'src' or 'export'."
              ((and (not type) lines-spec) (setq type :lines))
              ((not type) (setq type :lines) (setq lines-spec "1-"))))
 
-          (message "DEBUG: Final parse result - type: %s, id-spec: %s" type id-spec)
           `(:file ,file 
             :type ,type
             :lines-spec ,lines-spec
@@ -317,7 +315,6 @@ Returns only the content of the block, without the #+NAME:, #+begin_src, and #+e
     (return-from org-include-inline--fetch-named-block-content 
                  (format "Error: File not readable: %s" file)))
   
-  (message "DEBUG: Fetching named block: %s from file: %s" block-name file)
   (with-temp-buffer
     (insert-file-contents file)
     (org-mode)
@@ -327,12 +324,10 @@ Returns only the content of the block, without the #+NAME:, #+begin_src, and #+e
                      (when (string= (org-element-property :name element) block-name)
                        element))
                    nil t)))
-      (message "DEBUG: Found block: %s" (if block "yes" "no"))
       (if block
           (let* ((content (org-element-property :value block)))
             (if content
                 (let ((trimmed (string-trim content)))
-                  (message "DEBUG: Block content length: %d" (length trimmed))
                   trimmed)
               "")) ; Return empty string if no content
         (format "Error: Named block \"%s\" not found in %s" 
@@ -359,12 +354,10 @@ LINES-SPEC is like \"1-10\", returning only a portion of the content."
                 (let ((title (org-element-property :raw-value headline))
                       (custom-id (org-element-property :CUSTOM_ID headline)))
                   (cond
-                   ;; 通过 #custom-id 匹配
                    ((and (string-prefix-p "#" headline-spec)
                          custom-id
                          (string= custom-id (substring headline-spec 1)))
                     headline)
-                   ;; 通过 *headline 匹配（忽略 * 数量）
                    ((and (string-prefix-p "*" headline-spec)
                          title
                          (string= (string-trim (replace-regexp-in-string "^\\*+\\s-*" "" headline-spec))
@@ -379,22 +372,17 @@ LINES-SPEC is like \"1-10\", returning only a portion of the content."
                                 (buffer-substring-no-properties content-begin content-end)
                               ""))
                (final-content raw-content))
-          ;; 处理 only-contents
           (when only-contents
-            ;; 去除 property drawer, planning 等，仅保留正文
             (with-temp-buffer
               (insert raw-content)
               (goto-char (point-min))
-              ;; 跳过 property drawer
               (when (re-search-forward "^:PROPERTIES:$" nil t)
                 (let ((prop-end (and (re-search-forward "^:END:$" nil t) (point))))
                   (when prop-end (delete-region (point-min) prop-end))))
-              ;; 跳过 planning 行（如 DEADLINE, SCHEDULED）
               (goto-char (point-min))
               (while (looking-at "^\s-*\(DEADLINE:\|SCHEDULED:\|CLOSED:\)")
                 (forward-line 1))
               (setq final-content (buffer-substring-no-properties (point) (point-max)))))
-          ;; 处理 lines-spec
           (when (and lines-spec (not (string-empty-p final-content)))
             (let* ((lines (split-string final-content "\n"))
                    (start 1)
@@ -421,27 +409,20 @@ ID is the entry ID (UUID, internal format, or custom format).
 If ONLY-CONTENTS is non-nil, return only the contents (excluding properties).
 LINES-SPEC is like \"1-10\", returning only those lines."
   (require 'org-id)
-  (message "DEBUG: Fetching content for ID: %s" id)
   (if-let ((marker (org-id-find id t)))
       (with-current-buffer (marker-buffer marker)
         (save-excursion
           (goto-char marker)
-          (message "DEBUG: Found ID at position %d in buffer %s" (point) (buffer-name))
-          ;; 确保我们在标题的开始位置
           (beginning-of-line)
-          ;; 获取当前 entry 的内容
           (let ((content
                  (save-restriction
-                   ;; 限制范围到当前 subtree
                    (org-narrow-to-subtree)
                    (let ((raw-content (buffer-substring-no-properties (point) (point-max))))
                      (with-temp-buffer
                        (org-mode)
                        (insert raw-content)
-                       ;; 保留标题行，但跳过 drawer
                        (goto-char (point-min))
-                       (forward-line 1)  ;; 移动到标题行之后
-                       ;; 跳过所有 drawer
+                       (forward-line 1) 
                        (while (looking-at org-drawer-regexp)
                          (let ((drawer-end (save-excursion
                                            (re-search-forward "^[ \t]*:END:[ \t]*$" nil t))))
@@ -449,15 +430,11 @@ LINES-SPEC is like \"1-10\", returning only those lines."
                              (delete-region (point) (progn (goto-char drawer-end) 
                                                          (forward-line 1)
                                                          (point))))))
-                       ;; 跳过 planning 信息
                        (goto-char (point-min))
-                       (forward-line 1)  ;; 再次移动到标题行之后
+                       (forward-line 1)  
                        (while (looking-at org-planning-line-re)
                          (delete-region (point) (progn (forward-line 1) (point))))
-                       ;; 获取处理后的内容
                        (buffer-substring-no-properties (point-min) (point-max)))))))
-            (message "DEBUG: Initial content length: %d" (length (or content "")))
-            ;; 处理 lines-spec
             (when (and content lines-spec)
               (let* ((lines (split-string content "\n"))
                      (start 1)
@@ -471,7 +448,6 @@ LINES-SPEC is like \"1-10\", returning only those lines."
                                          (cl-subseq lines (1- start) end)
                                          "\n")))))
             (let ((final-content (if content (string-trim content) "")))
-              (message "DEBUG: Final content length: %d" (length final-content))
               (or (and final-content (not (string-empty-p final-content))
                       final-content)
                   (format "Error: No content found for ID %s" id))))))
@@ -481,27 +457,17 @@ LINES-SPEC is like \"1-10\", returning only those lines."
   "Create or update an overlay at POINT to display CONTENT in BUFFER.
 If BUFFER is nil, use current buffer. Ensures overlay stays attached to buffer."
   (let ((buf (or buffer (current-buffer))))
-    (message "org-include-inline--create-or-update-overlay: ===ENTERED=== point=%s, content-len=%s, buffer=%s"
-             point (if content (length content) "NIL") buf)
-
     (if (and content (> (length content) 0))
         (progn
-          (message "org-include-inline--create-or-update-overlay: Content valid (len %d). Pt %s (buf: %s, min: %d, max: %d)."
-                   (length content) point buf (with-current-buffer buf (point-min)) (with-current-buffer buf (point-max)))
-
           (condition-case e-make-overlay
               (with-current-buffer buf
                 (let ((ov (make-overlay point point buf)))
-                  (message "org-include-inline--create-or-update-overlay: make-overlay SUCCESS: ov=%S" ov)
-
                   (overlay-put ov 'org-include-inline t)
                   (overlay-put ov 'face 'org-include-inline-face)
                   (overlay-put ov 'after-string (propertize content 'face 'org-include-inline-face))
-                  (overlay-put ov 'evaporate nil) ;; 改为 nil，防止自动删除
-                  (message "org-include-inline--create-or-update-overlay: 'modification-hooks deliberately SKIPPED.")
+                  (overlay-put ov 'evaporate nil)
                   (overlay-put ov 'priority 100)
-                  (push ov org-include-inline--overlays)
-                  (message "org-include-inline--create-or-update-overlay: Overlay pushed. Total: %d." (length org-include-inline--overlays))))
+                  (push ov org-include-inline--overlays)))
             (error 
              (message "org-include-inline--create-or-update-overlay: ERROR on make-overlay (point %s, buffer %s): %S" 
                       point buf e-make-overlay))))
@@ -518,7 +484,7 @@ If BUFFER is nil, use current buffer. Ensures overlay stays attached to buffer."
 
 (defun org-include-inline--cleanup-on-kill ()
   "Clean up org-include-inline registrations when a buffer is killed."
-  (when org-include-inline-mode
+  (when (and (boundp 'org-include-inline-mode) org-include-inline-mode)
     (remhash (current-buffer) org-include-inline--last-refresh-time)
     (org-include-inline--unregister-buffer (current-buffer))))
 
@@ -528,16 +494,12 @@ If BUFFER is nil, use current buffer. Ensures overlay stays attached to buffer."
   "Register that ORG-BUFFER (a buffer object) includes SOURCE-FILE (a path string)."
   (let* ((source-path (expand-file-name source-file))
          (existing-entry (assoc source-path org-include-inline--source-buffers)))
-    (message "DEBUG: Registering dependency - source: %s, buffer: %s" source-path (buffer-name org-buffer))
     (if existing-entry
         (unless (member org-buffer (cdr existing-entry))
           (setf (cdr existing-entry) (cons org-buffer (cdr existing-entry)))
-          (message "DEBUG: Added buffer to existing entry"))
-      (push (cons source-path (list org-buffer))
-            org-include-inline--source-buffers)
-      (message "DEBUG: Created new entry"))
-    (message "DEBUG: Current source-buffers after registration: %S" org-include-inline--source-buffers)
-    (org-include-inline--save-associations)))
+        (push (cons source-path (list org-buffer))
+              org-include-inline--source-buffers)
+        (org-include-inline--save-associations)))))
 
 (defun org-include-inline--unregister-buffer (buffer)
   "Remove BUFFER (a buffer object) from all source file registrations."
@@ -587,7 +549,6 @@ This function:
   (interactive)
   (unless org-include-inline--refreshing  
     (let ((org-include-inline--refreshing t))
-      (message "DEBUG: Starting refresh in buffer %s" (buffer-name))
       (org-include-inline--clear-overlays)
       
       ;; Only process if we're in an org buffer with the mode enabled
@@ -600,9 +561,7 @@ This function:
           (save-excursion
             (goto-char (point-min))
             ;; Find all #+INCLUDE directives
-            (message "DEBUG: Searching for #+INCLUDE directives")
             (while (search-forward-regexp "^[ \t]*#\\+INCLUDE:" nil t)
-              (message "DEBUG: Found #+INCLUDE at line %d" (line-number-at-pos))
               (setq count (1+ count))
               
               (let* ((current-line-text
@@ -611,7 +570,6 @@ This function:
                      (include-info (org-include-inline--parse-include-directive current-line-text)))
                 
                 (when include-info
-                  (message "DEBUG: Parsed include info: %S" include-info)
                   (let ((source-file (plist-get include-info :file)))
                     ;; Add to source files list if not already there
                     (unless (member source-file source-files)
@@ -663,13 +621,10 @@ This function:
     (when buffer-file-name
       (let ((org-include-inline--refreshing t)
             (source-path (expand-file-name buffer-file-name)))
-        (message "DEBUG: Checking dependents of %s" source-path)
         (dolist (buffer-entry org-include-inline--source-buffers)
           (when (string= (car buffer-entry) source-path)
-            (message "DEBUG: Found dependent buffers: %S" (cdr buffer-entry))
             (dolist (org-buffer (cdr buffer-entry))
               (when (buffer-live-p org-buffer)
-                (message "DEBUG: Refreshing buffer %s" (buffer-name org-buffer))
                 (with-current-buffer org-buffer
                   (org-include-inline-refresh-buffer))))))))))
 
@@ -690,7 +645,6 @@ This function:
       (message "File does not exist: %s" target-file)
       (error "File not found"))
     (let ((smart-path (org-include-inline--get-smart-path target-file)))
-      (message "DEBUG: Target file: %s, smart path: %s" target-file smart-path)
       (let ((target-buffer (find-file-noselect target-file)))
         (unless target-buffer
           (error "Failed to open target file: %s" target-file))
@@ -722,10 +676,8 @@ This function:
         (end (line-number-at-pos (region-end)))
         (rel-path org-include-inline--relative-target-file) 
         (org-buf org-include-inline--target-org-buffer))    
-    (message "DEBUG: Creating include with rel-path: %s, lines: %d-%d" rel-path start end)
     (with-current-buffer org-buf
       (let ((actual-include-path rel-path))
-        (message "DEBUG: Inserting INCLUDE directive with path: %s" actual-include-path)
         (insert (format "#+INCLUDE: \"%s\" :lines \"%d-%d\"\n" actual-include-path start end))
         (when org-include-inline-mode
           (org-include-inline-refresh-buffer))))
@@ -1028,10 +980,8 @@ Allows selecting an entry with ID from an Org file."
     (let ((org-include-inline--refreshing t)
           (source-path (expand-file-name buffer-file-name)))
       (when (assoc source-path org-include-inline--source-buffers)
-        (message "DEBUG: Source file saved: %s" source-path)
         (dolist (buffer (cdr (assoc source-path org-include-inline--source-buffers)))
           (when (buffer-live-p buffer)
-            (message "DEBUG: Refreshing dependent buffer: %s" (buffer-name buffer))
             (with-current-buffer buffer
               (org-include-inline-refresh-buffer)
               (puthash buffer (float-time) org-include-inline--last-refresh-time)))))
@@ -1084,7 +1034,6 @@ Otherwise, call the original function OLD-FN with PATH and ARG."
            (string-match "\\(.*\\)::\\([A-Za-z0-9-]+\\)\\'" path))
       (let* ((file (match-string 1 path))
              (id (match-string 2 path)))
-        (message "DEBUG: Handling potential ID link: %s in file: %s" id file)
         ;; Check if it looks like an ID
         (if (org-include-inline--is-valid-org-id-p id)
             (condition-case err
@@ -1093,12 +1042,12 @@ Otherwise, call the original function OLD-FN with PATH and ARG."
                   (find-file file)
                   ;; Then try to find the ID
                   (or (org-find-entry-with-id id)
-                      (user-error "无法在文件 %s 中找到 ID 为 \"%s\" 的 entry" 
-                                (file-name-nondirectory file) id)))
+                      (user-error "Cannot find ID \"%s\" in file %s" 
+                                id (file-name-nondirectory file))))
               (error
                (message "Error jumping to ID %s: %S" id err)
-               (user-error "无法打开文件 %s 或找到 ID \"%s\"" 
-                         (file-name-nondirectory file) id)))
+               (user-error "Cannot open file %s or find ID \"%s\"" 
+                           (file-name-nondirectory file) id)))
           ;; Not an ID, call original function
           (funcall old-fn path arg)))
     ;; No ID pattern, call original function
