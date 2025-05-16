@@ -60,12 +60,14 @@ When using `org-include-inline-insert-headline`, you can:
 2. Choose from a list of available headlines (showing level and CUSTOM_ID if available)
 3. The headline will be included with all its content
 
+![Interactive Headline Selection](images/figure3.gif)
+
 When using `org-include-inline-insert-id`, you can:
 1. Select an Org file containing entries with IDs
 2. Choose from a list of available entries (showing their headlines and IDs)
 3. The entry will be included with all its content
 
-![Interactive ID Selection](images/figure3.gif)
+![Interactive ID Selection](images/figure4.gif)
 
 
 3. Auto-refresh after modified the source file:
