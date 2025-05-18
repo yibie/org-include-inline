@@ -18,7 +18,6 @@ org-include-inline enhances the Org mode editing experience by showing included 
   - Include as example blocks or other block types
   - Include specific headlines/subtrees using title, CUSTOM_ID, or ID
 - **Interactive Creation**: Easy-to-use commands for creating include directives
-- **Toggle Visibility**: Show/hide included content with a single command
 - **Auto-refresh**: 
   - Content updates automatically when source files change
   - Intelligent dependency tracking ensures all dependent org buffers are refreshed
@@ -37,7 +36,7 @@ You can install org-include-inline through your preferred package manager. For e
 
 ### Basic Usage
 
-1. Enable the mode in any Org buffer:
+1. Enable/disable the mode in any Org buffer:
 ```elisp
 M-x org-include-inline-mode
 ```
@@ -68,7 +67,6 @@ When using `org-include-inline-insert-id`, you can:
 3. The entry will be included with all its content
 
 ![Interactive ID Selection](images/figure4.gif)
-
 
 3. Auto-refresh after modified the source file:
 - `C-c '` go to the source file. When used on:
@@ -112,7 +110,6 @@ When using `org-include-inline-insert-id`, you can:
 
 # Include a subtree using its ID
 #+INCLUDE: "path/to/file.org::B5623BAE-013E-42C3-9956-3D367716B3CC"
-
 ```
 
 ## Auto-refresh
@@ -133,11 +130,11 @@ There are several ways to refresh the included content:
    ```elisp
    ;; Customize the refresh key binding
    (setq org-include-inline-auto-refresh-key "C-c C-x C-v")
+   ```
 
 ## Commands
 
 - `org-include-inline-refresh-buffer` - Refresh all inline includes in the current buffer
-- `org-include-inline-toggle-visibility` - Toggle visibility of all inline content
 - `org-include-inline-insert-file` - Insert a directive to include an entire file
 - `org-include-inline-insert-from-lines` - Insert a directive to include specific lines
 - `org-include-inline-insert-as-block` - Insert a directive to include a file as a block

@@ -517,24 +517,6 @@ If BUFFER is nil, use current buffer. Ensures overlay stays attached to buffer."
 ;;; Core Functions
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(defun org-include-inline-toggle-visibility ()
-  "Toggle visibility of inline included content."
-  (interactive)
-  (if (null org-include-inline--overlays)
-      (org-include-inline-refresh-buffer) ; If none, try to create them
-    (let* ((first-ov (car org-include-inline--overlays))
-           (currently-visible (not (eq 'hidden (overlay-get first-ov 'display)))))
-      (message "Toggle visibility: currently %s" (if currently-visible "visible" "hidden"))
-      (dolist (ov org-include-inline--overlays)
-        (when (overlayp ov)
-          (if currently-visible
-              (progn
-                (overlay-put ov 'saved-after-string (overlay-get ov 'after-string))
-                (overlay-put ov 'after-string nil)
-                (overlay-put ov 'display 'hidden))
-            (overlay-put ov 'after-string (overlay-get ov 'saved-after-string))
-            (overlay-put ov 'display nil)))))))
-
 (defun org-include-inline-refresh-buffer ()
   "Refresh all inline includes in the current buffer.
 
@@ -1072,7 +1054,6 @@ inline using overlays.
 
 Available commands:
   `org-include-inline-refresh-buffer'       - Refresh all inline includes in the current buffer
-  `org-include-inline-toggle-visibility'    - Toggle the visibility of inline content
   `org-include-inline-insert-file'          - Insert a directive to include an entire file
   `org-include-inline-insert-from-lines'    - Insert a directive to include specific lines from a file
   `org-include-inline-insert-as-block'      - Insert a directive to include file as a block (src, example, etc.)
@@ -1088,7 +1069,7 @@ Available commands:
   :group 'org-include-inline
   (if org-include-inline-mode
       (progn
-        (message "DEBUG: Enabling org-include-inline-mode in %s" (buffer-name))
+        (message "Enabling org-include-inline-mode in %s" (buffer-name))
         (unless org-include-inline--source-buffers
           (org-include-inline--load-associations))
         (add-hook 'after-save-hook #'org-include-inline--after-save-handler nil t)
@@ -1098,7 +1079,7 @@ Available commands:
           (org-include-inline-refresh-buffer)
           (puthash (current-buffer) (float-time) org-include-inline--last-refresh-time)))
     (progn
-      (message "DEBUG: Disabling org-include-inline-mode in %s" (buffer-name))
+      (message "Disabling org-include-inline-mode in %s" (buffer-name))
       (remove-hook 'after-save-hook #'org-include-inline--after-save-handler t)
       (remove-hook 'after-revert-hook #'org-include-inline-refresh-buffer t)
       (remove-hook 'window-configuration-change-hook #'org-include-inline-refresh-buffer t)
