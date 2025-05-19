@@ -475,6 +475,19 @@ LINES-SPEC is like \"1-10\", returning only those lines."
                   (format "Error: No content found for ID %s" id))))))
     (format "Error: Entry with ID %s not found" id)))
 
+(defun org-include-inline--limit-content (string)
+  "Extract `org-include-inline-max-lines-to-display' lines content from STRING.
+If the content has more lines than the limit, it will be truncated and a message
+will be added indicating the truncation."
+  (let* ((parts (split-string string "\n" nil))
+         (total-lines (length parts))
+         (max-lines (min org-include-inline-max-lines-to-display total-lines)))
+    (if (< max-lines total-lines)
+        (concat
+         (mapconcat #'identity (butlast parts (- total-lines max-lines)) "\n")
+         (format "\n... (truncated at %d lines)" org-include-inline-max-lines-to-display))
+      string)))
+
 (defun org-include-inline--create-or-update-overlay (point content &optional buffer)
   "Create or update an overlay at POINT to display CONTENT in BUFFER.
 If BUFFER is nil, use current buffer. Ensures overlay stays attached to buffer."
@@ -494,9 +507,10 @@ If BUFFER is nil, use current buffer. Ensures overlay stays attached to buffer."
                   (overlay-put ov 'org-include-inline t)
                   (when parent-pos
                     (overlay-put ov 'org-include-parent-heading parent-pos))
-                  ;; Use before-string for better visibility control
+                  ;; Use before-string for better visibility control and apply line limit
                   (overlay-put ov 'before-string 
-                             (propertize content 
+                             (propertize (org-include-inline--limit-content content)
+                                       'face 'org-include-inline-face
                                        'org-include-inline t
                                        'invisible 'org-include-inline))
                   (overlay-put ov 'evaporate nil)
