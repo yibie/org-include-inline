@@ -155,7 +155,52 @@ There are several ways to refresh the included content:
 (set-face-attribute 'org-include-inline-face nil
                     :background "black"
                     :foreground "white")
+
+;; Control export behavior
+(setq org-include-inline-export-behavior 'selective) ;; 'selective, 'ignore, or 'process
+
+;; Control folding behavior
+(setq org-include-inline-respect-folding t)  ;; nil to always show includes
 ```
+
+### Export Behavior
+
+The mode provides flexible control over how includes are handled during export:
+
+1. **Global Export Behavior**:
+   ```elisp
+   ;; Choose one of:
+   (setq org-include-inline-export-behavior 'selective) ;; default
+   (setq org-include-inline-export-behavior 'ignore)    ;; ignore all includes
+   (setq org-include-inline-export-behavior 'process)   ;; process all includes
+   ```
+
+2. **Per-Include Control** (when `org-include-inline-export-behavior` is `'selective`):
+   ```org
+   #+INCLUDE: "file.org"              ;; Will be exported (default)
+   #+INCLUDE: "notes.org" :export: no ;; Will not be exported
+   ```
+
+3. **Export Modes**:
+   - `selective` (default): Process includes normally, except those marked with `:export: no`
+   - `ignore`: Completely ignore all includes during export
+   - `process`: Process all includes normally (same as org default)
+
+### Folding Behavior
+
+The mode can respect Org's outline folding:
+
+1. **Global Folding Control**:
+   ```elisp
+   ;; Choose one:
+   (setq org-include-inline-respect-folding t)   ;; default, hide with parent heading
+   (setq org-include-inline-respect-folding nil) ;; always show includes
+   ```
+
+2. **Behavior**:
+   - When `t`: Includes are hidden when their parent heading is folded
+   - When `nil`: Includes remain visible regardless of heading state
+   - Includes before any heading are always visible
 
 ## Comparison with org-transclusion
 

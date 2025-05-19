@@ -64,6 +64,23 @@ For example: '(\"\\`[A-Z]+[0-9]+\\'\") to match IDs like 'ABC123'."
   :type '(repeat string)
   :group 'org-include-inline)
 
+(defcustom org-include-inline-respect-folding t
+  "Whether to hide includes when their parent heading is folded."
+  :type 'boolean
+  :group 'org-include-inline)
+
+(defcustom org-include-inline-export-behavior 'selective
+  "How to handle includes during export.
+Possible values:
+- selective: process includes normally, except those marked with :export: no
+- ignore: completely ignore all includes
+- process: process all includes normally (same as org default)"
+  :type '(choice
+          (const :tag "Selective processing (default)" selective)
+          (const :tag "Ignore all includes" ignore)
+          (const :tag "Process all includes" process))
+  :group 'org-include-inline)
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Internal Variables and Data Structures
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -92,6 +109,11 @@ Each pair maps a source file to a list of org buffers that include it.")
 
 (defvar org-include-inline--last-refresh-time (make-hash-table :test 'equal)
   "Hash table to store last refresh time for each buffer.")
+
+(defvar-local org-include-inline--original-includes nil
+  "Alist to store original includes during export process.
+Each element is a cons cell (keyword . value) where keyword is the org-element
+and value is the original include directive value.")
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Helper Functions
@@ -461,10 +483,22 @@ If BUFFER is nil, use current buffer. Ensures overlay stays attached to buffer."
         (progn
           (condition-case e-make-overlay
               (with-current-buffer buf
-                (let ((ov (make-overlay point point buf)))
+                (let ((ov (make-overlay point point buf))
+                      (parent-pos (save-excursion
+                                  (condition-case nil
+                                      (progn
+                                        (org-back-to-heading t)
+                                        (point))
+                                    (error nil)))))
+                  ;; Store overlay's parent heading position if exists
                   (overlay-put ov 'org-include-inline t)
-                  (overlay-put ov 'face 'org-include-inline-face)
-                  (overlay-put ov 'after-string (propertize content 'face 'org-include-inline-face))
+                  (when parent-pos
+                    (overlay-put ov 'org-include-parent-heading parent-pos))
+                  ;; Use before-string for better visibility control
+                  (overlay-put ov 'before-string 
+                             (propertize content 
+                                       'org-include-inline t
+                                       'invisible 'org-include-inline))
                   (overlay-put ov 'evaporate nil)
                   (overlay-put ov 'priority 100)
                   (push ov org-include-inline--overlays)))
@@ -1043,6 +1077,83 @@ Otherwise, call the original function OLD-FN with PATH and ARG."
 (unless (advice-member-p #'org-include-inline--advice-org-link-open-as-file 'org-link-open-as-file)
   (advice-add 'org-link-open-as-file :around #'org-include-inline--advice-org-link-open-as-file))
 
+(defun org-include-inline--update-folding-state (&optional cycle-state)
+  "Update visibility of includes based on heading fold state.
+CYCLE-STATE is the folding state passed by `org-cycle-hook', but we don't use it
+directly as we check each heading's actual folded state individually."
+  (when org-include-inline-respect-folding
+    (save-excursion
+      (dolist (ov org-include-inline--overlays)
+        (when (overlay-buffer ov)  ; ensure overlay still exists
+          (let* ((parent-pos (overlay-get ov 'org-include-parent-heading))
+                 (before-str (overlay-get ov 'before-string)))
+            ;; If no parent heading, always show the include
+            (if (not parent-pos)
+                (when before-str
+                  (put-text-property 0 (length before-str) 'invisible nil before-str))
+              ;; Otherwise check parent heading's fold state
+              (goto-char parent-pos)
+              (let ((folded (org-fold-folded-p)))
+                (when before-str
+                  (put-text-property 0 (length before-str) 'invisible 
+                                   (when folded 'org-include-inline) 
+                                   before-str))))))))))
+
+(defun org-include-inline--export-filter (backend)
+  "Filter function for export process.
+Handles includes according to `org-include-inline-export-behavior':
+- selective: process includes normally, except those marked with :export: no
+- ignore: completely ignore all includes
+- process: process all includes normally (same as org default)"
+  (when (bound-and-true-p org-include-inline-mode)
+    (let ((includes (org-element-map (org-element-parse-buffer) 'keyword
+                     (lambda (keyword)
+                       (when (string= (org-element-property :key keyword) "INCLUDE")
+                         keyword)))))
+      ;; Save original state
+      (setq-local org-include-inline--original-includes
+                  (mapcar (lambda (inc)
+                           (cons inc (org-element-property :value inc)))
+                          includes))
+      
+      (pcase org-include-inline-export-behavior
+        ('ignore
+         ;; Comment out all includes
+         (dolist (inc includes)
+           (goto-char (org-element-property :begin inc))
+           (insert "# ")))
+        
+        ('selective
+         ;; Only comment out includes explicitly marked with :export: no
+         (dolist (inc includes)
+           (save-excursion
+             (goto-char (org-element-property :begin inc))
+             ;; Check for :export: property in the line
+             (let* ((line (buffer-substring-no-properties 
+                          (line-beginning-position) 
+                          (line-end-position)))
+                    (export-prop (when (string-match ":export:\\s-*\\([^ \t\n]+\\)" line)
+                                 (match-string 1 line))))
+               ;; Comment out only if :export: is explicitly "no"
+               (when (string= export-prop "no")
+                 (goto-char (line-beginning-position))
+                 (insert "# "))))))
+        
+        ('process
+         ;; Do nothing, let org process all includes normally
+         nil)))))
+
+(defun org-include-inline--after-export ()
+  "Restore includes after export."
+  (when (bound-and-true-p org-include-inline--original-includes)
+    (save-excursion
+      (dolist (pair org-include-inline--original-includes)
+        (let ((keyword (car pair)))
+          (goto-char (org-element-property :begin keyword))
+          (when (looking-at "^#\\s-*")  ; Only remove if we added the comment
+            (delete-char 2)))))
+    (setq-local org-include-inline--original-includes nil)))
+
 ;;;###autoload
 (define-minor-mode org-include-inline-mode
   "Toggle display of #+INCLUDE contents inline in Org buffers.
@@ -1072,6 +1183,14 @@ Available commands:
         (message "Enabling org-include-inline-mode in %s" (buffer-name))
         (unless org-include-inline--source-buffers
           (org-include-inline--load-associations))
+        ;; Add export hooks
+        (add-hook 'org-export-before-processing-hook 
+                  #'org-include-inline--export-filter nil t)
+        (add-hook 'org-export-after-processing-hook 
+                  #'org-include-inline--after-export nil t)
+        ;; Add folding hook
+        (add-hook 'org-cycle-hook 
+                  #'org-include-inline--update-folding-state nil t)
         (add-hook 'after-save-hook #'org-include-inline--after-save-handler nil t)
         (add-hook 'after-revert-hook #'org-include-inline-refresh-buffer nil t)
         (add-hook 'window-configuration-change-hook #'org-include-inline-refresh-buffer nil t)
@@ -1080,6 +1199,14 @@ Available commands:
           (puthash (current-buffer) (float-time) org-include-inline--last-refresh-time)))
     (progn
       (message "Disabling org-include-inline-mode in %s" (buffer-name))
+      ;; Remove export hooks
+      (remove-hook 'org-export-before-processing-hook 
+                   #'org-include-inline--export-filter t)
+      (remove-hook 'org-export-after-processing-hook 
+                   #'org-include-inline--after-export t)
+      ;; Remove folding hook
+      (remove-hook 'org-cycle-hook 
+                   #'org-include-inline--update-folding-state t)
       (remove-hook 'after-save-hook #'org-include-inline--after-save-handler t)
       (remove-hook 'after-revert-hook #'org-include-inline-refresh-buffer t)
       (remove-hook 'window-configuration-change-hook #'org-include-inline-refresh-buffer t)
