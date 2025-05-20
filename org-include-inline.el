@@ -179,68 +179,66 @@ LANGUAGE is the source code language when BLOCK-TYPE is 'src' or 'export'."
         line-after-file remainder-after-headline)
 
     ;; 1. Match #+INCLUDE: "FILE" part and get the rest of the line
-    (if (string-match "^[ \t]*#\\+INCLUDE:[ \t]*\"\\([^\"]+\\)\"\\(.*\\)" line-text)
-        (progn
-          (setq file (match-string 1 line-text))
-          (setq line-after-file (match-string 2 line-text))
+    (when (string-match "^[ \t]*#\\+INCLUDE:[ \t]*\"\\([^\"]+\\)\"\\(.*\\)" line-text)
+      (let ((file-spec (match-string 1 line-text)))
+        (setq line-after-file (match-string 2 line-text))
 
-          ;; Check if this is a named block reference (file::block-name) or headline (file::*headline) or ID
-          (when (string-match "\\(.*\\)::\\([^:]+\\)\\'" file)
-            (let ((main-file (match-string 1 file))
-                  (spec (match-string 2 file)))
+        ;; Check if this is a file::target specification
+        (if (string-match "\\(.*?\\)::+\\(.*\\)\\'" file-spec)
+            (let ((main-file (match-string 1 file-spec))
+                  (spec (match-string 2 file-spec)))
+              (setq file main-file)  ; Set the actual file path
               (cond
                ;; ID format
                ((org-include-inline--is-valid-org-id-p spec)
                 (setq type :id
-                      id-spec spec
-                      file main-file))
-               ;; Headline format
+                      id-spec spec))
+               ;; Headline format (now handles timestamps)
                ((or (string-prefix-p "*" spec)
-                    (string-prefix-p "#" spec))
+                    (string-prefix-p "[" spec)  ; Handle timestamp at start
+                    (string-match "^\\[.*\\]" spec))  ; Handle timestamp in middle
                 (setq headline-spec spec
-                      file main-file
                       type :headline))
                ;; Named block
                (t
                 (setq named-block spec
-                      file main-file
-                      type :named-block)))
-              ))
+                      type :named-block))))
+          ;; No :: in the file spec, treat as regular file
+          (progn
+            (setq file file-spec
+                  type :lines)))  ; Default to :lines type for regular files
 
-          (when file
-            (setq file (expand-file-name file (if buffer-file-name
-                                                 (file-name-directory buffer-file-name)
-                                               default-directory)))
-            ;; Initially, the remainder for further parsing is everything after the file part
-            (setq remainder-after-headline line-after-file)
+        (when file
+          (setq file (expand-file-name file (if buffer-file-name
+                                               (file-name-directory buffer-file-name)
+                                             default-directory)))
+          ;; Initially, the remainder for further parsing is everything after the file part
+          (setq remainder-after-headline line-after-file)
 
-            ;; 2. Try to parse block type and language
-            (when (string-match "^[ \t]+\\([^ \t\n]+\\)\\(?:[ \t]+\\([^ \t\n]+\\)\\)?[ \t]*\\(.*\\)" line-after-file)
-              (let ((first-param (match-string 1 line-after-file))
-                    (second-param (match-string 2 line-after-file)))
-                ;; Check if first parameter is a block type
-                (unless (string-prefix-p ":" first-param)
-                  (setq block-type first-param
-                        language second-param
-                        remainder-after-headline (match-string 3 line-after-file)))))
+          ;; 2. Try to parse block type and language
+          (when (string-match "^[ \t]+\\([^ \t\n]+\\)\\(?:[ \t]+\\([^ \t\n]+\\)\\)?[ \t]*\\(.*\\)" line-after-file)
+            (let ((first-param (match-string 1 line-after-file))
+                  (second-param (match-string 2 line-after-file)))
+              ;; Check if first parameter is a block type
+              (unless (string-prefix-p ":" first-param)
+                (setq block-type first-param
+                      language second-param
+                      remainder-after-headline (match-string 3 line-after-file)))))
 
-            ;; 3. Try to parse ::headline-spec from remainder
-            (when (and remainder-after-headline
-                      (string-match "^[ \t]*::\\(.+?\\)[ \t]*\\(.*\\)" remainder-after-headline))
-              (setq headline-spec (string-trim (match-string 1 remainder-after-headline)))
-              (setq remainder-after-headline (match-string 2 remainder-after-headline)))
+          ;; 3. Try to parse ::headline-spec from remainder
+          (when (and remainder-after-headline
+                    (string-match "^[ \t]*::\\(.+?\\)[ \t]*\\(.*\\)" remainder-after-headline))
+            (setq headline-spec (string-trim (match-string 1 remainder-after-headline)))
+            (setq remainder-after-headline (match-string 2 remainder-after-headline)))
 
-            ;; 4. Try to parse :lines from remainder
-            (when (and remainder-after-headline
-                      (string-match "^[ \t]*:lines[ \t]+\"\\([0-9]+-\?[0-9]*\\)\"" remainder-after-headline))
-              (setq lines-spec (match-string 1 remainder-after-headline)))
+          ;; 4. Try to parse :lines from remainder
+          (when (and remainder-after-headline
+                    (string-match "^[ \t]*:lines[ \t]+\"\\([0-9]+-\?[0-9]*\\)\"" remainder-after-headline))
+            (setq lines-spec (match-string 1 remainder-after-headline)))
 
-            ;; Determine type
-            (cond
-             (headline-spec (setq type :headline))
-             (named-block (setq type :named-block))
-             ((and (not type) lines-spec) (setq type :lines))
-             ((not type) (setq type :lines) (setq lines-spec "1-"))))
+          ;; Set default lines-spec for :lines type
+          (when (eq type :lines)
+            (setq lines-spec (or lines-spec "1-")))
 
           `(:file ,file 
             :type ,type
@@ -250,9 +248,7 @@ LANGUAGE is the source code language when BLOCK-TYPE is 'src' or 'export'."
             :language ,language
             :named-block ,named-block
             :id-spec ,id-spec
-            :original-line ,line-text))
-      nil)))
-
+            :original-line ,line-text))))))
 
 (defun org-include-inline--fetch-file-lines (file lines-spec &optional block-type language)
   "Fetch specific lines from FILE based on LINES-SPEC (e.g., \"1-10\", \"5\").
@@ -261,7 +257,7 @@ LANGUAGE is used when BLOCK-TYPE is 'src' or 'export'.
 Note that for 'example', 'export', or 'src' blocks, content is escaped."
   (unless (file-readable-p file)
     (message "Error: File not readable: %s" file)
-    (return-from org-include-inline--fetch-file-lines (format "Error: File not readable: %s" file)))
+    (format "Error: File not readable: %s" file))
 
   (let ((start-line 1)
         (end-line most-positive-fixnum)
@@ -334,8 +330,7 @@ BLOCK-NAME is the name of the block to fetch.
 Returns only the content of the block, without the #+NAME:, #+begin_src, and #+end_src lines."
   (unless (file-readable-p file)
     (message "Error: File not readable: %s" file)
-    (return-from org-include-inline--fetch-named-block-content 
-                 (format "Error: File not readable: %s" file)))
+    (format "Error: File not readable: %s" file))
   
   (with-temp-buffer
     (insert-file-contents file)
@@ -362,10 +357,10 @@ If ONLY-CONTENTS is non-nil, return only the content (excluding property drawers
 LINES-SPEC is like \"1-10\", returning only a portion of the content."
   (unless (file-readable-p file)
     (message "Error: Org file not readable: %s" file)
-    (return-from org-include-inline--fetch-org-headline-content (format "Error: Org file not readable: %s" file)))
+    (format "Error: Org file not readable: %s" file))
   (unless headline-spec
     (message "Error: No headline specification provided for file %s" file)
-    (return-from org-include-inline--fetch-org-headline-content (format "Error: No headline specified for %s" file)))
+    (format "Error: No headline specified for %s" file))
   (with-temp-buffer
     (insert-file-contents file)
     (org-mode)
@@ -380,10 +375,17 @@ LINES-SPEC is like \"1-10\", returning only a portion of the content."
                          custom-id
                          (string= custom-id (substring headline-spec 1)))
                     headline)
-                   ((and (string-prefix-p "*" headline-spec)
+                   ((and (or (string-prefix-p "*" headline-spec)
+                            (string-prefix-p "[" headline-spec))
                          title
-                         (string= (string-trim (replace-regexp-in-string "^\\*+\\s-*" "" headline-spec))
-                                  (string-trim title)))
+                         ;; Clean up the headline spec and title for comparison
+                         (let* ((clean-spec (string-trim 
+                                           (replace-regexp-in-string 
+                                            "^\\*+\\s-*" "" headline-spec)))
+                                (clean-title (string-trim title)))
+                           ;; Use string-match for more flexible matching
+                           (or (string= clean-spec clean-title)
+                               (string-match (regexp-quote clean-spec) clean-title))))
                     headline))))
               nil t)))
       (if (not target-headline)
@@ -600,7 +602,8 @@ This function:
                      (include-info (org-include-inline--parse-include-directive current-line-text)))
                 
                 (when include-info
-                  (let ((source-file (plist-get include-info :file)))
+                  (let* ((source-file (plist-get include-info :file))
+                         (type (plist-get include-info :type)))
                     ;; Add to source files list if not already there
                     (unless (member source-file source-files)
                       (push source-file source-files))
@@ -613,37 +616,49 @@ This function:
                       ;; Fetch and display content based on include type
                       (let ((content
                              (cond
-                              ((eq (plist-get include-info :type) :lines)
-                               (org-include-inline--fetch-file-lines 
-                                source-file
-                                (plist-get include-info :lines-spec)
-                                (plist-get include-info :block-type)
-                                (plist-get include-info :language)))
-                              ((eq (plist-get include-info :type) :headline)
-                               (org-include-inline--fetch-org-headline-content 
-                                source-file
-                                (plist-get include-info :headline-spec)))
-                              ((eq (plist-get include-info :type) :named-block)
-                               (org-include-inline--fetch-named-block-content
-                                source-file
-                                (plist-get include-info :named-block)))
-                              ((eq (plist-get include-info :type) :id)
-                               (org-include-inline--fetch-org-id-content
-                                (plist-get include-info :id-spec)))
+                              ;; For :lines type, we need to handle the file directly
+                              ((eq type :lines)
+                               (if (file-readable-p source-file)
+                                   (org-include-inline--fetch-file-lines 
+                                    source-file
+                                    (plist-get include-info :lines-spec)
+                                    (plist-get include-info :block-type)
+                                    (plist-get include-info :language))
+                                 (format "Error: File not readable: %s" source-file)))
+                              ;; For :headline type, use the headline content function
+                              ((eq type :headline)
+                               (if (file-readable-p source-file)
+                                   (org-include-inline--fetch-org-headline-content 
+                                    source-file
+                                    (plist-get include-info :headline-spec))
+                                 (format "Error: File not readable: %s" source-file)))
+                              ;; For :named-block type, use the named block function
+                              ((eq type :named-block)
+                               (if (file-readable-p source-file)
+                                   (org-include-inline--fetch-named-block-content
+                                    source-file
+                                    (plist-get include-info :named-block))
+                                 (format "Error: File not readable: %s" source-file)))
+                              ;; For :id type, use the ID content function
+                              ((eq type :id)
+                               (if (file-readable-p source-file)
+                                   (org-include-inline--fetch-org-id-content
+                                    (plist-get include-info :id-spec))
+                                 (format "Error: File not readable: %s" source-file)))
                               (t 
                                (format "Error: Unknown include type for %s" 
                                        (plist-get include-info :original-line))))))
-                    
-                    ;; Create overlay if we have valid content
-                    (when (and content (> (length content) 0))
-                      (org-include-inline--create-or-update-overlay 
-                       overlay-pos content current-buffer)
-                      
-                      ;; Register this org buffer as dependent on the source file
-                      (org-include-inline--register-source-file 
-                       source-file current-buffer)))))))))
-      
-      (message "Refresh complete. Processed %d includes." count))))))
+                        
+                        ;; Create overlay if we have valid content
+                        (when (and content (> (length content) 0))
+                          (org-include-inline--create-or-update-overlay 
+                           overlay-pos content current-buffer)
+                          
+                          ;; Register this org buffer as dependent on the source file
+                          (org-include-inline--register-source-file 
+                           source-file current-buffer))))))))
+          
+          (message "Refresh complete. Processed %d includes." count)))))))
 
 (defun org-include-inline--refresh-dependent-buffers ()
   "Refresh all org buffers that include the current buffer's file."
@@ -1091,6 +1106,26 @@ Otherwise, call the original function OLD-FN with PATH and ARG."
 (unless (advice-member-p #'org-include-inline--advice-org-link-open-as-file 'org-link-open-as-file)
   (advice-add 'org-link-open-as-file :around #'org-include-inline--advice-org-link-open-as-file))
 
+(defun org-include-inline--is-point-folded (point)
+  "Check if POINT is within any folded region in the current buffer.
+This function checks both the point's own heading and all parent headings."
+  (save-excursion
+    (goto-char point)
+    (let ((current-pos point)
+          (folded nil))
+      ;; First check if we're directly under a folded heading
+      (when (org-at-heading-p)
+        (setq folded (org-fold-folded-p)))
+      ;; Then check all parent headings
+      (while (and (not folded)
+                  (org-up-heading-safe))
+        (setq folded (org-fold-folded-p)))
+      ;; If we're not folded by headers, check if we're in a folded block
+      (or folded
+          (save-excursion
+            (goto-char current-pos)
+            (org-invisible-p))))))
+
 (defun org-include-inline--update-folding-state (&optional cycle-state)
   "Update visibility of includes based on heading fold state.
 CYCLE-STATE is the folding state passed by `org-cycle-hook', but we don't use it
@@ -1099,19 +1134,15 @@ directly as we check each heading's actual folded state individually."
     (save-excursion
       (dolist (ov org-include-inline--overlays)
         (when (overlay-buffer ov)  ; ensure overlay still exists
-          (let* ((parent-pos (overlay-get ov 'org-include-parent-heading))
+          (let* ((overlay-pos (overlay-start ov))
                  (before-str (overlay-get ov 'before-string)))
-            ;; If no parent heading, always show the include
-            (if (not parent-pos)
-                (when before-str
-                  (put-text-property 0 (length before-str) 'invisible nil before-str))
-              ;; Otherwise check parent heading's fold state
-              (goto-char parent-pos)
-              (let ((folded (org-fold-folded-p)))
-                (when before-str
-                  (put-text-property 0 (length before-str) 'invisible 
-                                   (when folded 'org-include-inline) 
-                                   before-str))))))))))
+            (when before-str
+              ;; Check if the overlay position is within any folded region
+              (let ((should-hide (org-include-inline--is-point-folded overlay-pos)))
+                (put-text-property 0 (length before-str) 
+                                 'invisible 
+                                 (when should-hide 'org-include-inline)
+                                 before-str)))))))))
 
 (defun org-include-inline--export-filter (backend)
   "Filter function for export process.
