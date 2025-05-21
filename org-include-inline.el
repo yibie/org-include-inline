@@ -609,19 +609,22 @@ If BUFFER is nil, use current buffer. Ensures overlay stays attached to buffer."
 
 (defun org-include-inline--ensure-blank-lines-around-include ()
   "Ensure there are blank lines around the INCLUDE directive at point.
-Should be called with point at the beginning of an INCLUDE line."
+Should be called with point at the beginning of an INCLUDE line.
+Returns the point position after ensuring blank lines."
   (let ((orig-pos (point)))
-    ;; Ensure blank line after INCLUDE
+    ;; Check and ensure blank line after INCLUDE
     (forward-line 1)
-    (unless (looking-at-p "^[ \t]*$")
-      (insert "\n"))
-    
-    ;; Find next non-blank line and ensure blank line before it
-    (while (and (looking-at-p "^[ \t]*$")
-                (not (eobp)))
-      (forward-line 1))
-    (unless (or (eobp) (looking-at-p "^[ \t]*$"))
-      (insert "\n"))
+    ;; Look ahead to see if we need a blank line
+    (let ((next-non-blank
+           (save-excursion
+             (while (and (not (eobp))
+                        (looking-at-p "^[ \t]*$"))
+               (forward-line 1))
+             (point))))
+      ;; Only add blank line if we found a non-blank line and it's not already separated
+      (when (and (< (point) next-non-blank)
+                 (not (looking-at-p "^[ \t]*$")))
+        (insert "\n")))
     
     ;; Return to original position
     (goto-char orig-pos)))
@@ -773,26 +776,32 @@ This function:
 (defun org-include-inline--insert-include (include-spec)
   "Insert an INCLUDE directive with INCLUDE-SPEC and ensure blank lines around it.
 INCLUDE-SPEC should be the complete include specification string."
-  (let ((needs-newline-before (unless (or (bolp) (looking-back "^[ \t]*\n" nil))
-                               t)))
-    ;; Ensure we start with a blank line if needed
-    (when needs-newline-before
-      (insert "\n"))
-    
-    ;; Insert the INCLUDE directive
-    (insert (format "#+INCLUDE: %s\n" include-spec))
-    
-    ;; Ensure blank line after
-    (unless (looking-at-p "^[ \t]*$")
-      (insert "\n"))
-    
-    ;; If next non-blank line exists, ensure blank line before it
-    (save-excursion
-      (forward-line)
-      (while (and (not (eobp))
-                  (looking-at-p "^[ \t]*$"))
-        (forward-line 1))
-      (unless (or (eobp) (looking-at-p "^[ \t]*$"))
+  ;; Check if we need a newline before
+  (unless (or (bolp)
+              (save-excursion
+                (beginning-of-line)
+                (looking-at-p "^[ \t]*$")))
+    (insert "\n"))
+  
+  ;; Insert the INCLUDE directive
+  (insert (format "#+INCLUDE: %s\n" include-spec))
+  
+  ;; Check if we need a blank line after
+  (save-excursion
+    ;; Look ahead to find next non-blank line
+    (let ((next-non-blank
+           (save-excursion
+             (forward-line 1)
+             (while (and (not (eobp))
+                        (looking-at-p "^[ \t]*$"))
+               (forward-line 1))
+             (point))))
+      ;; Only add blank line if we found a non-blank line and it's not already separated
+      (when (and (< (point) next-non-blank)
+                 (save-excursion
+                   (forward-line 1)
+                   (not (looking-at-p "^[ \t]*$"))))
+        (forward-line 1)
         (insert "\n")))))
 
 (defun org-include-inline-confirm-lines ()
