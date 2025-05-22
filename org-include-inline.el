@@ -933,7 +933,7 @@ Otherwise, return the path relative to the current file."
 (defun org-include-inline-insert-named-block ()
   "Interactively select and include a named block from an Org file."
   (interactive)
-  (let* ((target-file (read-file-name "Include named block from Org file: " nil nil t ".org"))
+  (let* ((target-file (read-file-name "Include named block from Org file: " nil nil t nil))
          (smart-path nil))
     
     ;; Validate file exists and is org
@@ -979,7 +979,7 @@ Otherwise, return the path relative to the current file."
 (defun org-include-inline-insert-headline ()
   "Interactively select and include a headline from an Org file."
   (interactive)
-  (let* ((target-file (read-file-name "Include headline from Org file: " nil nil t ".org")))
+  (let* ((target-file (read-file-name "Include headline from Org file: " nil nil t nil))
     (unless (and (file-exists-p target-file)
                  (string-match-p "\\.org$" target-file))
       (user-error "File must be an existing .org file: %s" target-file))
@@ -1025,12 +1025,12 @@ Otherwise, return the path relative to the current file."
                     (file-name-nondirectory target-file))
             
             (when org-include-inline-mode
-              (org-include-inline-refresh-buffer))))))))
+              (org-include-inline-refresh-buffer)))))))))
 
 (defun org-include-inline-insert-id ()
   "Interactively insert an #+INCLUDE directive based on ID."
   (interactive)
-  (let* ((target-file (read-file-name "Select Org file containing target ID: " nil nil t ".org")))
+  (let* ((target-file (read-file-name "Select Org file containing target ID: " nil nil t nil)))
     
     (unless (and (file-exists-p target-file)
                  (string-match-p "\\.org$" target-file))
