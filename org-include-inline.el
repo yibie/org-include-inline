@@ -933,7 +933,7 @@ Otherwise, return the path relative to the current file."
 (defun org-include-inline-insert-named-block ()
   "Interactively select and include a named block from an Org file."
   (interactive)
-  (let* ((target-file (read-file-name "Include named block from Org file: " nil nil t nil))
+  (let* ((target-file (read-file-name "Include named block from Org file: " nil nil t))
          (smart-path nil))
     
     ;; Validate file exists and is org
@@ -979,7 +979,7 @@ Otherwise, return the path relative to the current file."
 (defun org-include-inline-insert-headline ()
   "Interactively select and include a headline from an Org file."
   (interactive)
-  (let* ((target-file (read-file-name "Include headline from Org file: " nil nil t nil))
+  (let* ((target-file (read-file-name "Include headline from Org file: " nil nil t)))
     (unless (and (file-exists-p target-file)
                  (string-match-p "\\.org$" target-file))
       (user-error "File must be an existing .org file: %s" target-file))
@@ -1025,12 +1025,32 @@ Otherwise, return the path relative to the current file."
                     (file-name-nondirectory target-file))
             
             (when org-include-inline-mode
-              (org-include-inline-refresh-buffer)))))))))
+              (org-include-inline-refresh-buffer))))))))a〔简码：安〕
+
+(defun org-include-inline--get-entries-with-ids (file)
+  "Scan FILE for entries with IDs and return an alist of (title . id).
+Each entry contains the headline title and its ID."
+  (org-include-inline--with-temp-org-buffer
+   file
+   (lambda ()
+     (let ((entries nil)
+           (ast (org-element-parse-buffer)))
+       ;; Collect all headlines with ID properties
+       (org-element-map ast 'headline
+         (lambda (element)
+           (let ((id (org-element-property :ID element))
+                 (title (org-element-property :raw-value element)))
+             (when id
+               (push (cons (or title (format "Headline at line %d" 
+                                          (org-element-property :begin element)))
+                          id)
+                    entries)))))
+       (nreverse entries)))))
 
 (defun org-include-inline-insert-id ()
   "Interactively insert an #+INCLUDE directive based on ID."
   (interactive)
-  (let* ((target-file (read-file-name "Select Org file containing target ID: " nil nil t nil)))
+  (let* ((target-file (read-file-name "Select Org file containing target ID: " nil nil t)))
     
     (unless (and (file-exists-p target-file)
                  (string-match-p "\\.org$" target-file))
