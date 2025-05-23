@@ -1025,7 +1025,7 @@ Otherwise, return the path relative to the current file."
                     (file-name-nondirectory target-file))
             
             (when org-include-inline-mode
-              (org-include-inline-refresh-buffer))))))))a〔简码：安〕
+              (org-include-inline-refresh-buffer))))))))
 
 (defun org-include-inline--get-entries-with-ids (file)
   "Scan FILE for entries with IDs and return an alist of (title . id).
