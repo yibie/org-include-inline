@@ -38,11 +38,16 @@ If an included section is larger, it will be truncated."
   :type 'integer
   :group 'org-include-inline)
 
-(defcustom org-include-inline-auto-enable-in-org-mode nil
-  "Whether to automatically enable org-include-inline-mode in Org buffers.
-When non-nil, org-include-inline-mode will be enabled for all Org mode buffers.
-When nil, you need to manually enable the mode with M-x org-include-inline-mode."
-  :type 'boolean
+(defcustom org-include-inline-auto-enable-in-org-mode 'smart
+  "How to automatically enable org-include-inline-mode in Org buffers.
+Possible values:
+- nil: Never auto-enable, manual activation only
+- t: Always auto-enable in all Org mode buffers
+- smart: Only auto-enable in buffers that contain #+INCLUDE directives (recommended)"
+  :type '(choice
+          (const :tag "Never auto-enable" nil)
+          (const :tag "Always auto-enable" t)
+          (const :tag "Smart auto-enable (only when #+INCLUDE found)" smart))
   :group 'org-include-inline)
 
 (defcustom org-include-inline-auto-save t
@@ -473,7 +478,7 @@ ID is the entry ID (UUID, internal format, or custom format).
 If ONLY-CONTENTS is non-nil, return only the contents (excluding properties).
 LINES-SPEC is like \"1-10\", returning only those lines."
   (require 'org-id)
-  (if-let ((marker (org-id-find id t)))
+  (if-let* ((marker (org-id-find id t)))
       (with-current-buffer (marker-buffer marker)
         (save-excursion
           (goto-char marker)
@@ -1082,10 +1087,20 @@ Each entry contains the headline title and its ID."
 
 ;;; Automatically enable org-include-inline-mode in org-mode
 (defun org-include-inline-maybe-enable ()
-  "Enable org-include-inline-mode if auto-enable is set."
-  (when (and (derived-mode-p 'org-mode)
-             org-include-inline-auto-enable-in-org-mode)
-    (org-include-inline-mode 1)))
+  "Enable org-include-inline-mode based on auto-enable setting."
+  (when (derived-mode-p 'org-mode)
+    (pcase org-include-inline-auto-enable-in-org-mode
+      ('t
+       ;; Always enable
+       (org-include-inline-mode 1))
+      ('smart
+       ;; Only enable if buffer contains #+INCLUDE directives
+       (save-excursion
+         (goto-char (point-min))
+         (when (search-forward-regexp "^[ \t]*#\\+INCLUDE:" nil t)
+           (org-include-inline-mode 1))))
+      ;; nil: do nothing (manual activation only)
+      )))
 (add-hook 'org-mode-hook #'org-include-inline-maybe-enable)
 
 (defun org-include-inline--after-save-handler ()
@@ -1305,7 +1320,7 @@ Available commands:
   :group 'org-include-inline
   (if org-include-inline-mode
       (progn
-        (message "Enabling org-include-inline-mode in %s" (buffer-name))
+        ;; Silently enable the mode
         (unless org-include-inline--source-buffers
           (org-include-inline--load-associations))
         ;; Add export hooks
@@ -1322,7 +1337,7 @@ Available commands:
           (org-include-inline-refresh-buffer)
           (puthash (current-buffer) (float-time) org-include-inline--last-refresh-time)))
     (progn
-      (message "Disabling org-include-inline-mode in %s" (buffer-name))
+      ;; Silently disable the mode
       ;; Remove export hooks
       (remove-hook 'org-export-before-processing-hook 
                    #'org-include-inline--export-filter t)
