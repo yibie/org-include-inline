@@ -728,9 +728,7 @@ This function:
                           
                           ;; Register this org buffer as dependent on the source file
                           (org-include-inline--register-source-file 
-                           source-file current-buffer))))))))
-          
-          (message "Refresh complete. Processed %d includes." count)))))))
+                           source-file current-buffer))))))))))))))
 
 (defun org-include-inline--refresh-dependent-buffers ()
   "Refresh all org buffers that include the current buffer's file."
