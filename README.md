@@ -22,6 +22,7 @@ org-include-inline enhances the Org mode editing experience by showing included 
   - Content updates automatically when source files change
   - Intelligent dependency tracking ensures all dependent org buffers are refreshed
   - Efficient cleanup on buffer/mode deactivation
+- **Robust Visibility Handling**: Correctly handles overlay visibility during initial file load, even for very long included content, by leveraging Emacs' overlay `category` property.
 
 ## Installation
 
@@ -236,6 +237,11 @@ Contributions are welcome! Feel free to:
 - Report issues
 - Suggest enhancements
 - Submit pull requests
+
+## Changelog
+
+### v0.2.0 (2025-06-30)
+- **Fix**: Resolved a long-standing issue where long included overlays would not be correctly hidden on initial file load when their parent headline was folded. The fix leverages the overlay `category` property, making visibility handling more robust and eliminating race conditions with Emacs' display engine.
 
 ## License
 

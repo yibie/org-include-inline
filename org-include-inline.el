@@ -543,28 +543,21 @@ If BUFFER is nil, use current buffer. Ensures overlay stays attached to buffer."
         (progn
           (condition-case e-make-overlay
               (with-current-buffer buf
-                (let ((ov (make-overlay point point buf))
-                      (parent-pos (save-excursion
-                                  (condition-case nil
-                                      (progn
-                                        (org-back-to-heading t)
-                                        (point))
-                                    (error nil)))))
-                  ;; Store overlay's parent heading position if exists
+                (let ((ov (make-overlay point point buf)))
                   (overlay-put ov 'org-include-inline t)
-                  (when parent-pos
-                    (overlay-put ov 'org-include-parent-heading parent-pos))
-                  ;; Use before-string for better visibility control and apply line limit
-                  (overlay-put ov 'before-string 
-                             (propertize (org-include-inline--limit-content content)
-                                       'face 'org-include-inline-face
-                                       'org-include-inline t
-                                       'invisible 'org-include-inline))
+                  ;; This is the crucial part. By setting the category, the overlay's
+                  ;; visibility will automatically track the visibility of the
+                  ;; underlying text. If the text is hidden by Org's folding,
+                  ;; the overlay will be hidden too.
+                  (overlay-put ov 'category 'org-include-inline)
+                  (overlay-put ov 'before-string
+                               (propertize (org-include-inline--limit-content content)
+                                           'face 'org-include-inline-face))
                   (overlay-put ov 'evaporate nil)
                   (overlay-put ov 'priority 100)
                   (push ov org-include-inline--overlays)))
-            (error 
-             (message "org-include-inline--create-or-update-overlay: ERROR on make-overlay (point %s, buffer %s): %S" 
+            (error
+             (message "org-include-inline--create-or-update-overlay: ERROR on make-overlay (point %s, buffer %s): %S"
                       point buf e-make-overlay))))
       (message "org-include-inline--create-or-update-overlay: Content was NIL or empty. No overlay created. ===EXITING==="))))
 
@@ -1331,9 +1324,14 @@ Available commands:
         (add-hook 'after-save-hook #'org-include-inline--after-save-handler nil t)
         (add-hook 'after-revert-hook #'org-include-inline-refresh-buffer nil t)
         (add-hook 'window-configuration-change-hook #'org-include-inline-refresh-buffer nil t)
-        (let ((org-include-inline--refreshing t))
-          (org-include-inline-refresh-buffer)
-          (puthash (current-buffer) (float-time) org-include-inline--last-refresh-time)))
+        
+        ;; Initial refresh
+        (org-include-inline-refresh-buffer)
+
+        ;; Run a one-time visibility update after Emacs becomes idle.
+        ;; This catches any race conditions between overlay creation and
+        ;; Org's initial folding, especially for large overlays.
+        (run-with-idle-timer 0 nil #'org-include-inline--update-folding-state))
     (progn
       ;; Silently disable the mode
       ;; Remove export hooks
