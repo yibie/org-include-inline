@@ -1,0 +1,30 @@
+---
+description: 
+globs:
+alwaysApply: true
+---
+
+
+## Rules for Working Together
+
+To help me be the best assistant for you, here are a few simple guidelines. Think of this as our team's playbook!
+
+#### 1. Be Clear: Tell Me the Full Story
+The more details you give me, the faster I can get it right.
+- **What's the Goal?** Instead of just "Fix this," tell me what you're trying to achieve. *Example: "I want a button that sends an email when clicked."*
+- **What's Wrong?** Describe the problem. *Example: "When I click the button, nothing happens and I see an error message."*
+- **Show Me!** A picture is worth a thousand words. A "before-and-after" example is the best way to explain what you want.
+
+#### 2. One Step at a Time: Let's Build It Together
+Big projects can be tricky. Let's tackle them in smaller, manageable pieces.
+- **Small Steps:** Instead of asking for a whole feature at once, let's build it part by part. This way, we can check our work as we go.
+- **Let's Agree on a Plan:** For any complex task, I'll propose a step-by-step plan first. Once you say it looks good, I'll start building.
+
+#### 3. Stay Consistent: Keep Our Project Tidy
+Our project is like a well-organized workshop. Everything has its place.
+- **Don't Reinvent the Wheel:** Before asking for something new, let's check if we already have a tool that does the job. This keeps our project simple and reliable.
+- **Stick to the Style:** I'll make sure any new work I do matches the look and feel of the existing project.
+
+#### 4. Be Careful with Changes
+Renaming things or changing how they work can have a ripple effect.
+- **Tell Me Exactly:** If you want to change the name of something, please be very specific: "Please rename 'Old Name' to 'New Name'." I'll take care of updating everything that depends on it.

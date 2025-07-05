@@ -338,7 +338,7 @@ Ensures proper cleanup of the temporary buffer."
         (with-current-buffer temp-buffer
           (insert-file-contents file)
           (set-buffer-modified-p nil)
-          (let ((delay-mode-hooks t))
+          (delay-mode-hooks
             (org-mode))
           (prog1 (funcall fn)
             (set-buffer-modified-p nil)))
@@ -395,7 +395,7 @@ LINES-SPEC is like \"1-10\", returning only a portion of the content."
            (when only-contents
              (with-temp-buffer
                (insert raw-content)
-               (let ((delay-mode-hooks t))
+               (delay-mode-hooks
                  (org-mode))
                (goto-char (point-min))
                (when (re-search-forward "^:PROPERTIES:$" nil t)
@@ -1184,19 +1184,25 @@ Otherwise, call the original function OLD-FN with PATH and ARG."
 
 (defun org-include-inline--is-point-folded (point)
   "Check if POINT is within any folded region in the current buffer.
-Uses org-fold to accurately determine if point is in a folded region."
+Uses org-fold to accurately determine if point is in a folded region.
+This implementation is tolerant to buffers that do not yet contain any
+headlines, avoiding the 'before first headline' user-error."
   (save-excursion
     (goto-char point)
     (or
-     ;; Check if point is directly in a folded region
+     ;; 1. Check if point is directly in a folded region 
      (org-fold-folded-p)
-     ;; Check if point is in a folded outline region
+     ;; 2. Check if point is in a folded outline region
      (let ((current-pos point))
        (save-excursion
-         (when (org-back-to-heading t)
+         ;; if point is before the first heading, no further check is needed.
+         (if (and (fboundp 'org-before-first-heading-p)
+                  (org-before-first-heading-p))
+             nil
+           ;; call `org-back-to-heading` but ignore any errors such as "Before first headline"
+           (ignore-errors (org-back-to-heading t))
            (let* ((heading-pos (point))
                   (subtree-end (save-excursion (org-end-of-subtree t t)))
-                  ;; Check if the heading has a folded region
                   (folded (org-fold-folded-p)))
              (and folded
                   (> current-pos heading-pos)
@@ -1284,6 +1290,17 @@ Handles includes according to `org-include-inline-export-behavior':
     (add-hook 'org-cycle-hook #'org-include-inline--update-folding-state nil t)
     ;; Also hook into visibility changes
     (add-hook 'org-fold-folded-hook #'org-include-inline--update-folding-state nil t)))
+
+;; Compatibility macro for older Emacs (<28) where `delay-mode-hooks` is not defined.
+(unless (fboundp 'delay-mode-hooks)
+  (defmacro delay-mode-hooks (&rest body)
+    "Execute BODY with mode hooks temporarily disabled.
+This fallback implementation simply binds the special variable
+`delay-mode-hooks` to t while evaluating BODY.  On newer Emacs
+versions the built-in macro will be used instead, which avoids the
+\="Making delay-mode-hooks buffer-local while locally let-bound!" warning."
+    `(let ((delay-mode-hooks t))
+       ,@body)))
 
 ;;;###autoload
 (define-minor-mode org-include-inline-mode
